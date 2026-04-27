@@ -1,0 +1,6 @@
+{
+  "min_zoom": 14,
+  "max_zoom_osm": 18,
+  "max_zoom_topo": 17,
+  "source": "download_tiles.py"
+}
