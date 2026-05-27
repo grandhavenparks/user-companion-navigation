@@ -4,29 +4,29 @@ import 'package:path_provider/path_provider.dart';
 import 'package:path/path.dart' as path;
 import 'package:sqflite/sqflite.dart';
 
-/// Service to import pre-downloaded tiles from assets into FMTC
+/// Service to import pre-downloaded tiles from assets into FMTC.
+///
+/// Only topo tiles are imported. The bundled `assets/tiles/osm_tiles.db` is
+/// intentionally NOT imported — `tile.openstreetmap.org`'s usage policy forbids
+/// bundled offline prefetch, and the bundled OSM DB was largely populated with
+/// warning PNGs instead of real tiles. The asset file is kept on disk for now
+/// (still listed in pubspec.yaml), but no app-storage copy is created.
 class TileImportService {
   TileImportService._();
   static final TileImportService instance = TileImportService._();
 
-  /// Import tiles from assets/tiles/*.db to app storage for FMTC.
-  /// Replaces any existing `fmtc/*.db` on every run so updated bundled DBs are used.
+  /// Import tiles from assets/tiles/topo_tiles.db to app storage for FMTC.
+  /// Replaces any existing `fmtc/topo_tiles.db` on every run so updated bundled
+  /// DBs are used.
   Future<void> importTilesFromAssets() async {
     final appDir = await getApplicationDocumentsDirectory();
     final fmtcDir = Directory(path.join(appDir.path, 'fmtc'));
-    
+
     if (!await fmtcDir.exists()) {
       await fmtcDir.create(recursive: true);
     }
 
-    // Import OSM tiles
-    await _importDatabase(
-      assetPath: 'assets/tiles/osm_tiles.db',
-      targetPath: path.join(fmtcDir.path, 'osm_tiles.db'),
-      storeName: 'osm_tiles',
-    );
-
-    // Import Topo tiles
+    // Import Topo tiles only.
     await _importDatabase(
       assetPath: 'assets/tiles/topo_tiles.db',
       targetPath: path.join(fmtcDir.path, 'topo_tiles.db'),
@@ -46,29 +46,29 @@ class TileImportService {
       }
 
       print('Importing $storeName from assets...');
-      
+
       // Load database from assets
       final ByteData data = await rootBundle.load(assetPath);
       final List<int> bytes = data.buffer.asUint8List();
-      
+
       // Write to app storage
       await targetFile.writeAsBytes(bytes, flush: true);
-      
+
       final size = await targetFile.length();
       print('✓ Imported $storeName: ${(size / 1024 / 1024).toStringAsFixed(2)} MB');
-      
+
       // Verify database integrity
       final db = await openDatabase(targetPath, readOnly: true);
       final count = Sqflite.firstIntValue(
-        await db.rawQuery('SELECT COUNT(*) FROM tiles')
+        await db.rawQuery('SELECT COUNT(*) FROM tiles'),
       );
       await db.close();
-      
+
       print('  Contains ${count ?? 0} tiles');
-      
     } catch (e) {
       print('Error importing $storeName: $e');
-      // Continue - app will fall back to network
+      // Continue - missing tiles fall through to the 1x1 transparent fallback
+      // in OfflineTileImageProvider.
     }
   }
 }

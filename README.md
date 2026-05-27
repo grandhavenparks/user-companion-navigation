@@ -68,7 +68,3 @@ On each cold start, `TileImportService` **copies** the bundled `assets/tiles/*.d
 
 - **Location** — Map and navigation context.
 - **Storage / file access** — CSV import (platform-dependent).
-
-## License
-
-Add the license **Kowshid**!

@@ -2,7 +2,6 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart';
-
 import '../config/app_config.dart';
 import '../models/tree.dart';
 import '../models/user_location.dart';
@@ -18,7 +17,6 @@ import 'tree_detail_screen.dart';
 
 class ParkMapScreen extends ConsumerStatefulWidget {
   const ParkMapScreen({super.key});
-
   @override
   ConsumerState<ParkMapScreen> createState() => _ParkMapScreenState();
 }
@@ -27,7 +25,8 @@ class _ParkMapScreenState extends ConsumerState<ParkMapScreen> {
   final MapController _mapController = MapController();
   LatLng? _lastCenter;
   double _currentZoom = AppConfig.defaultMapZoom;
-  MapLayerType _layerType = MapLayerType.osm; // Changed to OSM (more reliable)
+  // Topo is the only supported layer; OSM was removed (see map_layer_selector.dart).
+  final MapLayerType _layerType = MapLayerType.topo;
 
   @override
   Widget build(BuildContext context) {
@@ -37,12 +36,11 @@ class _ParkMapScreenState extends ConsumerState<ParkMapScreen> {
     final parkTrees = ref.watch(parkTreesProvider);
     final parkRoute = ref.watch(parkRouteProvider);
     final nextTree = ref.watch(nextTreeProvider);
-    
+
     final parkPoints = selectedPark != null
         ? ref.watch(parkPointsProvider(selectedPark.id))
         : <LatLng>[];
     final tileZoomLimits = ref.watch(tileZoomLimitsProvider);
-
     return Scaffold(
       appBar: AppBar(
         title: const Text('Park Navigation'),
@@ -132,21 +130,10 @@ class _ParkMapScreenState extends ConsumerState<ParkMapScreen> {
       ),
       floatingActionButton: selectedPark == null
           ? null
-          : Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                FloatingActionButton.small(
-                  heroTag: 'layer',
-                  onPressed: () => _showLayerSelector(context, tileZoomLimits),
-                  child: const Icon(Icons.layers),
-                ),
-                const SizedBox(height: 8),
-                FloatingActionButton(
-                  heroTag: 'focus_park',
-                  onPressed: () => _focusOnPark(selectedPark),
-                  child: const Icon(Icons.center_focus_strong),
-                ),
-              ],
+          : FloatingActionButton(
+              heroTag: 'focus_park',
+              onPressed: () => _focusOnPark(selectedPark),
+              child: const Icon(Icons.center_focus_strong),
             ),
     );
   }
@@ -190,12 +177,11 @@ class _ParkMapScreenState extends ConsumerState<ParkMapScreen> {
     required List<LatLng> parkPoints,
   }) {
     final selectedPark = ref.watch(selectedParkProvider);
-    
-    // Check if user is inside the park boundary
-    final isUserInPark = selectedPark != null && 
-        userLocation != null && 
-        selectedPark.containsPoint(userLocation.latitude, userLocation.longitude);
 
+    // Check if user is inside the park boundary
+    final isUserInPark = selectedPark != null &&
+        userLocation != null &&
+        selectedPark.containsPoint(userLocation.latitude, userLocation.longitude);
     return Stack(
       children: [
         FlutterMap(
@@ -346,7 +332,7 @@ class _ParkMapScreenState extends ConsumerState<ParkMapScreen> {
       ],
     );
   }
-  
+
   /// Build polygon layer for park points (closed boundary covering all points)
   PolygonLayer _buildPointsPolygonLayer(List<LatLng> points) {
     return PolygonLayer(
@@ -362,7 +348,7 @@ class _ParkMapScreenState extends ConsumerState<ParkMapScreen> {
       ],
     );
   }
-  
+
   /// Build marker layer for park points (showing actual point locations)
   MarkerLayer _buildPointMarkersLayer(List<LatLng> points) {
     return MarkerLayer(
@@ -421,64 +407,6 @@ class _ParkMapScreenState extends ConsumerState<ParkMapScreen> {
       );
     });
   }
-
-  void _showLayerSelector(BuildContext context, TileZoomLimits limits) {
-    showDialog(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Select Map Layer'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            ListTile(
-              title: const Text('OpenStreetMap'),
-              leading: Radio<MapLayerType>(
-                value: MapLayerType.osm,
-                groupValue: _layerType,
-                onChanged: (value) {
-                  if (value != null) {
-                    setState(() {
-                      _layerType = value;
-                      final cap = maxZoomForLayerType(value, limits);
-                      if (_currentZoom > cap) {
-                        _currentZoom = cap;
-                        if (_lastCenter != null) {
-                          _mapController.move(_lastCenter!, _currentZoom);
-                        }
-                      }
-                    });
-                    Navigator.pop(context);
-                  }
-                },
-              ),
-            ),
-            ListTile(
-              title: const Text('Topographic'),
-              leading: Radio<MapLayerType>(
-                value: MapLayerType.topo,
-                groupValue: _layerType,
-                onChanged: (value) {
-                  if (value != null) {
-                    setState(() {
-                      _layerType = value;
-                      final cap = maxZoomForLayerType(value, limits);
-                      if (_currentZoom > cap) {
-                        _currentZoom = cap;
-                        if (_lastCenter != null) {
-                          _mapController.move(_lastCenter!, _currentZoom);
-                        }
-                      }
-                    });
-                    Navigator.pop(context);
-                  }
-                },
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
 }
 
 class _NavigationCard extends ConsumerWidget {
@@ -487,11 +415,9 @@ class _NavigationCard extends ConsumerWidget {
     required this.userLocation,
     required this.parkRoute,
   });
-
   final Tree nextTree;
   final UserLocation userLocation;
   final ParkRoute? parkRoute;
-
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final distance = calculateDistance(
@@ -500,16 +426,13 @@ class _NavigationCard extends ConsumerWidget {
       nextTree.latitude,
       nextTree.longitude,
     );
-
     final bearing = ParkRouteService.calculateBearing(
       fromLat: userLocation.latitude,
       fromLng: userLocation.longitude,
       toLat: nextTree.latitude,
       toLng: nextTree.longitude,
     );
-
     final pathDistance = parkRoute?.getDistanceToTree(nextTree) ?? distance;
-
     return Card(
       elevation: 8,
       child: Padding(
@@ -606,14 +529,11 @@ class _NavigationCard extends ConsumerWidget {
 
 class _RouteStatsCard extends StatelessWidget {
   const _RouteStatsCard({required this.route});
-
   final ParkRoute route;
-
   @override
   Widget build(BuildContext context) {
     final visited = route.trees.where((t) => t.visited).length;
     final total = route.trees.length;
-
     return Card(
       child: Padding(
         padding: const EdgeInsets.all(12),
@@ -641,10 +561,8 @@ class _AnimatedUserMarker extends StatefulWidget {
     required this.isNavigating,
     required this.heading,
   });
-
   final bool isNavigating;
   final double heading;
-
   @override
   State<_AnimatedUserMarker> createState() => _AnimatedUserMarkerState();
 }
@@ -653,7 +571,6 @@ class _AnimatedUserMarkerState extends State<_AnimatedUserMarker>
     with SingleTickerProviderStateMixin {
   late AnimationController _controller;
   late Animation<double> _animation;
-
   @override
   void initState() {
     super.initState();
@@ -661,18 +578,15 @@ class _AnimatedUserMarkerState extends State<_AnimatedUserMarker>
       duration: const Duration(milliseconds: 1500),
       vsync: this,
     )..repeat(reverse: true);
-
     _animation = Tween<double>(begin: 0.8, end: 1.2).animate(
       CurvedAnimation(parent: _controller, curve: Curves.easeInOut),
     );
   }
-
   @override
   void dispose() {
     _controller.dispose();
     super.dispose();
   }
-
   @override
   Widget build(BuildContext context) {
     return AnimatedBuilder(
@@ -701,7 +615,7 @@ class _AnimatedUserMarkerState extends State<_AnimatedUserMarker>
               height: 40,
               decoration: BoxDecoration(
                 shape: BoxShape.circle,
-                color: widget.isNavigating 
+                color: widget.isNavigating
                     ? Colors.green.withOpacity(0.3)
                     : Colors.blue.withOpacity(0.3),
                 border: Border.all(
@@ -739,4 +653,3 @@ class _AnimatedUserMarkerState extends State<_AnimatedUserMarker>
     );
   }
 }
-
