@@ -17,8 +17,9 @@ class ParkService {
     'parks/MI_1002_DuncanPark.geojson',
     'parks/MI_1003_LakeForestCemetery.geojson',
     'parks/MI_1004_EscanabaPark.geojson',
+    'parks/MI_1005_YankeeSprings.geojson',
+    'parks/MI_1006_PJHoffmaster.geojson',
     'parks/MI_1101_AppleRidge.geojson',
-    'parks/MI_1102_GVSU.geojson',
   ];
   
   /// Load all parks from the parks/ directory
