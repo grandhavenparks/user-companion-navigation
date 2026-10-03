@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 
-/// Application theme - forest/field oriented colors.
+/// Application theme - forest/field oriented colours.
 class AppTheme {
   AppTheme._();
 
@@ -13,11 +13,8 @@ class AppTheme {
         primary: const Color(0xFF2E7D32),
         secondary: const Color(0xFF558B2F),
       ),
-      appBarTheme: const AppBarTheme(
-        centerTitle: true,
-        elevation: 0,
-      ),
-      cardTheme: CardTheme(
+      appBarTheme: const AppBarTheme(centerTitle: true, elevation: 0),
+      cardTheme: CardThemeData(
         elevation: 2,
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
       ),
@@ -37,11 +34,8 @@ class AppTheme {
         primary: const Color(0xFF66BB6A),
         secondary: const Color(0xFF81C784),
       ),
-      appBarTheme: const AppBarTheme(
-        centerTitle: true,
-        elevation: 0,
-      ),
-      cardTheme: CardTheme(
+      appBarTheme: const AppBarTheme(centerTitle: true, elevation: 0),
+      cardTheme: CardThemeData(
         elevation: 2,
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
       ),
@@ -52,8 +46,21 @@ class AppTheme {
     );
   }
 
-  /// Colors for tree classification markers.
-  static const Color environmentColor = Color(0xFF4CAF50); // Green - healthy
-  static const Color sickColor = Color(0xFFFFC107);        // Amber - sick
-  static const Color deadColor = Color(0xFFE53935);         // Red - dead
+  // Map colours. Points are not coloured by health classification.
+
+  /// Unvisited point inside the selected park.
+  static const Color pointColor = Color(0xFFEF6C00);
+
+  /// The point you are being navigated to.
+  static const Color targetColor = Color(0xFFC2185B);
+
+  /// Point already marked visited.
+  static const Color visitedColor = Color(0xFF2E7D32);
+
+  /// Point outside the selected park (shown, never navigated).
+  static const Color outsideColor = Color(0xFF9E9E9E);
+
+  static const Color routeColor = Color(0xFF6A1B9A);
+  static const Color userColor = Color(0xFF1E88E5);
+  static const Color parkBorderColor = Color(0xFF2E7D32);
 }

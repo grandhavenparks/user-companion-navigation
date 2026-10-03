@@ -1,73 +1,99 @@
-# Edge Forestry Mobile
+# User Navigation Companion
 
-Offline-first Flutter app for field navigation to flagged points in park areas: GPS on a map with bundled offline tiles, optional route hints inside a selected park, and local visit tracking.
+Android app id: `com.user_navigation_companion` (Flutter project folder and Dart
+package are still named `edge_forestry_mobile`).
 
-## Technical documentation
+Offline-first Flutter app for walking to flagged trees (for example oak wilt
+detections) inside park boundaries. The map, park boundaries and navigation
+work with no network at all; everything is bundled in the APK.
 
-Extra developer-focused notes (architecture, data model, Android toolchain) are in the `docs/` folder:
+## What it does
 
-| Document | Contents |
-|----------|----------|
-| [docs/architecture.md](docs/architecture.md) | Startup, modules, navigation, Riverpod |
-| [docs/data-and-offline.md](docs/data-and-offline.md) | SQLite, CSV import, park assets, offline tiles, visited export |
-| [docs/android.md](docs/android.md) | Gradle / AGP / Kotlin / NDK versions for Android builds |
+- **Import points (CSV)**: any results file with latitude/longitude columns.
+  Many header spellings are recognised (`lat`, `Latitude`, `y`, `GPSLatitude`,
+  `decimalLatitude`, `POINT_Y`, `"lat"`, a combined `coordinates` column or
+  WKT `POINT(lon lat)`), as are comma/semicolon/tab files, decimal commas,
+  degrees-minutes-seconds and N/S/E/W letters. `filename`, `classification`
+  and `confidence` columns are kept. An import report lists skipped rows.
+- **Offline map**: Protomaps (OpenStreetMap) vector tiles, sharp up to zoom 24.
+- **Parks**: every `parks/*.geojson` is loaded automatically. A file may hold
+  several polygons (MultiPolygon, several features, holes).
+- **Safety reminder**: every time the navigation page opens, "Be safe and
+  mindful of your surroundings during navigation." is shown first; the map,
+  GPS and navigation start after **Okay** (back closes the page).
+- **Navigation inside a park**: when you are inside a park area, the app
+  guides you to the nearest unvisited point, then along an open route that
+  ends at the last unvisited point. If you walk away without marking a point,
+  the target switches to whichever point is now clearly nearest. Within the
+  arrival radius a **Mark visited** button appears (with Undo).
+  Points outside the park are shown in grey and never navigated.
+- **Smooth GPS**: 1 s updates, the position marker glides between fixes and
+  the map follows you (pan to stop following, tap the location button to
+  resume). The screen stays on while navigating. GPS stops when the screen
+  is off and the route is recomputed from a fresh fix when it comes back.
+- **Export visited points** as CSV (filename, coordinates, time, dataset,
+  classification, confidence) via the share sheet.
 
-## Features
+## Requirements (development Mac)
 
-- **Import points (CSV)** — Pick a CSV with `latitude`/`lat` and `longitude`/`lng`/`lon` columns. Points are stored in SQLite as datasets you can enable or disable.
-- **Park map** — Choose a **park** from bundled `parks/*.geojson` boundaries. The map (OSM or OpenTopo) uses **offline tiles** from assets; switch layers on the map. Until a park is selected, the map area shows a simple “no park selected” state.
-- **Markers** — Imported points and classification-colored markers; tap a marker for **Mark visited** / **Mark not visited**.
-- **Visited export** — From home: **Export visited points (CSV)** (lat/lon via system share), optional **clear** after export, and **Clear visited marks**.
-- **Settings** — Distance in feet vs meters, GPS interval display, about.
+- Flutter 3.38+ (tested target: 3.41.6), JDK 17, Android SDK 36, NDK 28.2
+  (Flutter downloads/uses `flutter.ndkVersion`).
+- Map build: `brew install pmtiles`, then a virtual environment (Homebrew
+  Python blocks system-wide pip installs):
+  `python3 -m venv .venv && source .venv/bin/activate && python3 -m pip install -r tools/requirements.txt`.
 
-## Requirements
-
-- Flutter SDK (3.x), Dart `>=3.2.0`
-- Android: use Java **17**, NDK **25.1.8937393** if the build requests it (see [`docs/android.md`](docs/android.md))
-
-## Setup
+## Build and install
 
 ```bash
 cd edge_forestry_mobile
+
+# 1. Offline map for every park in parks/ (needs internet, a few minutes)
+source .venv/bin/activate          # venv holding the pmtiles Python package
+python3 tools/build_map.py
+
+# 2. Dependencies, checks, tests
 flutter pub get
-flutter run
+flutter analyze
+flutter test
+
+# 3. Release APK for the Pixel 4 (arm64) and install over USB
+flutter build apk --release --target-platform android-arm64
+adb install -r build/app/outputs/flutter-apk/app-release.apk
 ```
 
-## Offline tiles (`download_tiles.py`)
+Use a **release** build in the field: map rendering runs on background
+isolates only in release/profile mode, so debug builds feel choppy.
 
-The app ships **offline** OpenStreetMap and OpenTopoMap raster tiles as **SQLite** databases plus a small **JSON** file the Flutter app uses for min/max zoom. Operators regenerate these with the Python script at the project root.
+## Adding a park
 
-### What the script does
+1. Draw the boundary (e.g. geojson.io) and save it as
+   `parks/<ST>_<NNNN>_<CamelCaseName>.geojson` (any name works; a `name`
+   property on the first feature overrides the file name).
+2. `python3 tools/build_map.py`
+3. Rebuild and reinstall the APK.
 
-1. **Writes** `assets/tiles/tile_zoom_config.json` from the script constants `MIN_ZOOM`, `MAX_ZOOM`, and `MAX_ZOOM_TOPO` (defaults: **14**, **18**, **17**). The Flutter app loads this at startup (`TileZoomCache`) so map zoom limits match the downloaded data.
-2. **Creates/updates** `assets/tiles/osm_tiles.db` and `topo_tiles.db`, each with a `tiles` table (`zoom`, `x`, `y`, PNG `data`).
-3. **Scans** `parks/*.geojson` — for each file’s first **Polygon** feature, computes a lat/lon bounding box and downloads every tile in the zoom range that intersects that box.
-4. **Layers:** OSM tiles for `MIN_ZOOM`…`MAX_ZOOM`. OpenTopoMap for the same range but only while `zoom ≤ MAX_ZOOM_TOPO` (higher zooms are skipped; OTM does not serve them reliably).
-5. **HTTP:** At least **1 second** between outbound requests (`MIN_SECONDS_BETWEEN_REQUESTS`). Uses a custom **User-Agent** and **Referer** headers (OSM/OTM policy). Optional env overrides: `EDGE_FORESTRY_TILE_REFERER_OSM`, `EDGE_FORESTRY_TILE_REFERER_TOPO`.
-6. **Skips** re-downloading a tile if that `(zoom, x, y)` row already exists in the DB (no network call).
+## Offline map details (`tools/build_map.py`)
 
-Licensing and attribution: the script prints OSM/OTM attribution text; your deployment must respect [OpenStreetMap](https://www.openstreetmap.org/copyright) and [OpenTopoMap](https://opentopomap.org/) terms.
+- Source: the free Protomaps daily planet build (no API key). Only the bytes
+  for your parks are downloaded by `pmtiles extract`.
+- Region: each park area's bounding box plus `--buffer-m` (default 500 m).
+- Zoom: vector data z0-15; the app renders it sharply up to z24.
+- Output: `assets/map/basemap.mbtiles` + `assets/map/map_manifest.json`.
+  The app copies the MBTiles out of the APK only when its `build_id` changes.
+- Options: `--source <url|file>`, `--buffer-m`, `--maxzoom`, `--dry-run`,
+  `--keep-pmtiles` (view `build/map/basemap.pmtiles` on https://pmtiles.io).
 
-### How to run
+Attribution shown in the app: © OpenStreetMap contributors, Protomaps
+(ODbL data; Protomaps styles are CC0).
 
-From the **`edge_forestry_mobile`** directory (where `parks/` and `assets/` live):
+## Documentation
 
-```bash
-python3 download_tiles.py
-```
-
-Requires **Python 3** and network access. Duration depends on park size and zoom range (many tiles = long runs).
-
-Adjust coverage or zoom by editing the constants at the top of `download_tiles.py` (`PARKS_DIR`, `OUTPUT_DIR`, `MIN_ZOOM`, `MAX_ZOOM`, `MAX_ZOOM_TOPO`), then re-run.
-
-### App integration
-
-On each cold start, `TileImportService` **copies** the bundled `assets/tiles/*.db` files into app storage (`fmtc/`), replacing any previous copy, so the device always matches what you built into the app. After you change assets, do a **full app restart** (stop and `flutter run` again—not only hot reload) so Flutter picks up new asset bundles.
-
-## Permissions
-
-- **Location** — Map and navigation context.
-- **Storage / file access** — CSV import (platform-dependent).
+| Document | Contents |
+|----------|----------|
+| [docs/architecture.md](docs/architecture.md) | Modules, providers, navigation logic |
+| [docs/data-and-offline.md](docs/data-and-offline.md) | CSV import, parks, offline map, database |
+| [docs/android.md](docs/android.md) | Toolchain versions, signing, install/uninstall |
+| [CHANGES.md](CHANGES.md) | What changed in 1.1 and which faults were fixed |
 
 ## License
 

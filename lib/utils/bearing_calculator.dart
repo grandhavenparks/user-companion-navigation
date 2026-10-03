@@ -12,8 +12,7 @@ double calculateBearing(
   final lat2Rad = lat2 * pi / 180;
 
   final y = sin(dLon) * cos(lat2Rad);
-  final x = cos(lat1Rad) * sin(lat2Rad) -
-      sin(lat1Rad) * cos(lat2Rad) * cos(dLon);
+  final x = cos(lat1Rad) * sin(lat2Rad) - sin(lat1Rad) * cos(lat2Rad) * cos(dLon);
 
   final bearing = atan2(y, x) * 180 / pi;
   return (bearing + 360) % 360;
@@ -25,11 +24,11 @@ String bearingToCardinal(double bearing) {
     'N', 'NNE', 'NE', 'ENE', 'E', 'ESE', 'SE', 'SSE',
     'S', 'SSW', 'SW', 'WSW', 'W', 'WNW', 'NW', 'NNW',
   ];
-  final index = ((bearing + 11.25) / 22.5).floor() % 16;
+  final index = ((bearing % 360 + 11.25) / 22.5).floor() % 16;
   return directions[index];
 }
 
-/// Format bearing for display (e.g. "315° NW").
+/// Format bearing for display (e.g. "315° NW"); 359.6 shows as "0° N".
 String formatBearing(double bearing) {
-  return '${bearing.round()}° ${bearingToCardinal(bearing)}';
+  return '${bearing.round() % 360}° ${bearingToCardinal(bearing)}';
 }

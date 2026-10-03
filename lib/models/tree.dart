@@ -1,27 +1,10 @@
 import 'package:flutter/foundation.dart';
+import 'package:latlong2/latlong.dart';
 
-/// Health classification from Edge Forestry analysis.
-enum TreeClassification {
-  environment,
-  sick,
-  dead;
-
-  static TreeClassification fromString(String value) {
-    final lower = value.toLowerCase();
-    if (lower.contains('environment') || lower.contains('healthy')) {
-      return TreeClassification.environment;
-    }
-    if (lower.contains('sick')) {
-      return TreeClassification.sick;
-    }
-    if (lower.contains('dead')) {
-      return TreeClassification.dead;
-    }
-    return TreeClassification.environment;
-  }
-}
-
-/// A single tree/point from GeoJSON analysis results.
+/// A single imported point (usually one flagged tree / photo location).
+///
+/// Points are not coloured by health class; [classification] and
+/// [predictionScore] are kept for display and export only.
 @immutable
 class Tree {
   const Tree({
@@ -42,52 +25,50 @@ class Tree {
 
   final String id;
   final String datasetId;
+
+  /// Name shown in the app: the image file name or a generated "Point N".
   final String filename;
   final double latitude;
   final double longitude;
   final String? imageS3Key;
+
+  /// Model confidence as imported (either 0-1 or 0-100).
   final double? predictionScore;
   final String? predictedClass;
   final String? classification;
   final String? description;
   final bool visited;
   final DateTime? visitedAt;
-  final String? visitNotes; // User comments when visiting tree
+  final String? visitNotes;
 
-  TreeClassification get treeClassification =>
-      predictedClass != null
-          ? TreeClassification.fromString(predictedClass!)
-          : TreeClassification.environment;
+  LatLng get position => LatLng(latitude, longitude);
+
+  /// Confidence formatted as a percentage, or null when unknown.
+  String? get confidenceLabel {
+    final score = predictionScore;
+    if (score == null) return null;
+    final percent = score <= 1.0 ? score * 100 : score;
+    return '${percent.toStringAsFixed(1)}%';
+  }
 
   Tree copyWith({
-    String? id,
-    String? datasetId,
-    String? filename,
-    double? latitude,
-    double? longitude,
-    String? imageS3Key,
-    double? predictionScore,
-    String? predictedClass,
-    String? classification,
-    String? description,
     bool? visited,
     DateTime? visitedAt,
-    String? visitNotes,
   }) {
     return Tree(
-      id: id ?? this.id,
-      datasetId: datasetId ?? this.datasetId,
-      filename: filename ?? this.filename,
-      latitude: latitude ?? this.latitude,
-      longitude: longitude ?? this.longitude,
-      imageS3Key: imageS3Key ?? this.imageS3Key,
-      predictionScore: predictionScore ?? this.predictionScore,
-      predictedClass: predictedClass ?? this.predictedClass,
-      classification: classification ?? this.classification,
-      description: description ?? this.description,
+      id: id,
+      datasetId: datasetId,
+      filename: filename,
+      latitude: latitude,
+      longitude: longitude,
+      imageS3Key: imageS3Key,
+      predictionScore: predictionScore,
+      predictedClass: predictedClass,
+      classification: classification,
+      description: description,
       visited: visited ?? this.visited,
       visitedAt: visitedAt ?? this.visitedAt,
-      visitNotes: visitNotes ?? this.visitNotes,
+      visitNotes: visitNotes,
     );
   }
 
@@ -117,22 +98,15 @@ class Tree {
       latitude: (map['latitude'] as num).toDouble(),
       longitude: (map['longitude'] as num).toDouble(),
       imageS3Key: map['image_s3_key'] as String?,
-      predictionScore: map['prediction_score'] != null
-          ? (map['prediction_score'] as num).toDouble()
-          : null,
+      predictionScore: (map['prediction_score'] as num?)?.toDouble(),
       predictedClass: map['predicted_class'] as String?,
       classification: map['classification'] as String?,
       description: map['description'] as String?,
       visited: (map['visited'] as int?) == 1,
       visitedAt: map['visited_at'] != null
-          ? DateTime.parse(map['visited_at'] as String)
+          ? DateTime.tryParse(map['visited_at'] as String)
           : null,
       visitNotes: map['visit_notes'] as String?,
     );
   }
-  
-  /// Check if this tree is infected (sick or dead)
-  bool get isInfected =>
-      treeClassification == TreeClassification.sick ||
-      treeClassification == TreeClassification.dead;
 }

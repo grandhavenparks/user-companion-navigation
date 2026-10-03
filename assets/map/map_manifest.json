@@ -1,0 +1,88 @@
+{
+  "format": "mbtiles",
+  "file": "basemap.mbtiles",
+  "build_id": "f734ea227ab4fdef",
+  "created_utc": "2026-10-03T21:37:40+00:00",
+  "source": "https://build.protomaps.com/20261003.pmtiles",
+  "min_zoom": 0,
+  "max_zoom": 15,
+  "tile_compression": "gzip",
+  "tile_count": 91,
+  "size_bytes": 1495040,
+  "buffer_m": 500.0,
+  "bounds": [
+    -86.245844,
+    42.776318,
+    -85.761453,
+    43.059494
+  ],
+  "parks": [
+    {
+      "file": "MI_0001_DuncanPark.geojson",
+      "name": "Duncan Park",
+      "areas": 1,
+      "bboxes": [
+        [
+          -86.2405,
+          43.047756,
+          -86.227761,
+          43.055317
+        ]
+      ]
+    },
+    {
+      "file": "MI_0002_Mulligan'sHollow.geojson",
+      "name": "Mulligan's Hollow",
+      "areas": 1,
+      "bboxes": [
+        [
+          -86.245844,
+          43.052231,
+          -86.233734,
+          43.059494
+        ]
+      ]
+    },
+    {
+      "file": "MI_0003_HollandStatePark.geojson",
+      "name": "Holland State Park",
+      "areas": 1,
+      "bboxes": [
+        [
+          -86.206088,
+          42.776318,
+          -86.196607,
+          42.7834
+        ]
+      ]
+    },
+    {
+      "file": "MI_1001_AppleRidge.geojson",
+      "name": "Apple Ridge",
+      "areas": 1,
+      "bboxes": [
+        [
+          -85.765177,
+          42.96495,
+          -85.761453,
+          42.972369
+        ]
+      ]
+    },
+    {
+      "file": "MI_1002_GVSU.geojson",
+      "name": "GVSU",
+      "areas": 1,
+      "bboxes": [
+        [
+          -85.894022,
+          42.954365,
+          -85.883506,
+          42.972061
+        ]
+      ]
+    }
+  ],
+  "attribution": "\u00a9 OpenStreetMap contributors, Protomaps",
+  "theme": "protomaps_light_v4.json"
+}

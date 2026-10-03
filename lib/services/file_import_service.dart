@@ -1,117 +1,44 @@
-import 'dart:convert';
-import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:file_picker/file_picker.dart';
 
-/// Result of picking and parsing a file.
-class FileImportResult {
-  const FileImportResult({
-    this.json,
-    this.error,
-  });
+/// A file chosen by the user for import.
+class PickedFile {
+  const PickedFile({required this.name, required this.bytes});
 
-  final Map<String, dynamic>? json;
-  final String? error;
-
-  bool get success => error == null && json != null;
+  final String name;
+  final Uint8List bytes;
 }
 
-/// Result of picking and reading a CSV file.
-class CsvImportResult {
-  const CsvImportResult({
-    this.content,
-    this.fileName,
-    this.error,
-  });
+class FileImportException implements Exception {
+  const FileImportException(this.message);
 
-  final String? content;
-  final String? fileName;
-  final String? error;
+  final String message;
 
-  bool get success => error == null && content != null;
+  @override
+  String toString() => message;
 }
 
-/// Pick a GeoJSON file and return parsed JSON.
-Future<FileImportResult> pickAndReadGeoJSON() async {
-  // Use FileType.any on Android to work around MIME type issues with .geojson
-  // The file extension will be validated after selection
-  final result = await FilePicker.platform.pickFiles(
-    type: Platform.isAndroid ? FileType.any : FileType.custom,
-    allowedExtensions: Platform.isAndroid ? null : ['json', 'geojson'],
-    withData: true,
-  );
+const _allowedExtensions = ['.csv', '.tsv', '.txt'];
 
-  if (result == null || result.files.isEmpty) {
-    return const FileImportResult(error: 'No file selected');
+/// Lets the user pick a CSV/TSV file. Returns null when cancelled.
+///
+/// `FileType.any` is used on purpose: Android file providers report CSV
+/// files with many different MIME types, so filtering by type hides files.
+Future<PickedFile?> pickPointsFile() async {
+  final file = await FilePicker.pickFile(type: FileType.any);
+  if (file == null) return null;
+
+  final name = file.name;
+  final lower = name.toLowerCase();
+  final hasExtension = lower.contains('.');
+  if (hasExtension && !_allowedExtensions.any(lower.endsWith)) {
+    throw FileImportException(
+        'Please choose a .csv file (selected: $name).');
   }
-
-  final file = result.files.first;
-  
-  // Validate file extension (especially important when allowing any file type)
-  final fileName = file.name.toLowerCase();
-  if (!fileName.endsWith('.json') && !fileName.endsWith('.geojson')) {
-    return FileImportResult(
-      error: 'Please select a .json or .geojson file (selected: ${file.name})',
-    );
+  final bytes = await file.readAsBytes();
+  if (bytes.isEmpty) {
+    throw FileImportException('$name is empty.');
   }
-  
-  if (file.bytes == null && file.path == null) {
-    return const FileImportResult(error: 'Could not read file');
-  }
-
-  String content;
-  if (file.bytes != null) {
-    content = utf8.decode(file.bytes!);
-  } else {
-    try {
-      content = await File(file.path!).readAsString();
-    } catch (e) {
-      return FileImportResult(error: 'Read error: $e');
-    }
-  }
-
-  try {
-    final json = jsonDecode(content) as Map<String, dynamic>;
-    return FileImportResult(json: json);
-  } catch (e) {
-    return FileImportResult(error: 'Invalid JSON: $e');
-  }
-}
-
-/// Pick a CSV file and return text content.
-Future<CsvImportResult> pickAndReadCSV() async {
-  final result = await FilePicker.platform.pickFiles(
-    type: Platform.isAndroid ? FileType.any : FileType.custom,
-    allowedExtensions: Platform.isAndroid ? null : ['csv'],
-    withData: true,
-  );
-
-  if (result == null || result.files.isEmpty) {
-    return const CsvImportResult(error: 'No file selected');
-  }
-
-  final file = result.files.first;
-  final fileName = file.name.toLowerCase();
-  if (!fileName.endsWith('.csv')) {
-    return CsvImportResult(
-      error: 'Please select a .csv file (selected: ${file.name})',
-    );
-  }
-
-  if (file.bytes == null && file.path == null) {
-    return const CsvImportResult(error: 'Could not read file');
-  }
-
-  String content;
-  if (file.bytes != null) {
-    content = utf8.decode(file.bytes!);
-  } else {
-    try {
-      content = await File(file.path!).readAsString();
-    } catch (e) {
-      return CsvImportResult(error: 'Read error: $e');
-    }
-  }
-
-  return CsvImportResult(content: content, fileName: file.name);
+  return PickedFile(name: name, bytes: bytes);
 }

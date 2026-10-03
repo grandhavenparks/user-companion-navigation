@@ -1,177 +1,633 @@
-import 'package:flutter/material.dart';
-import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:flutter_map/flutter_map.dart';
-import 'package:latlong2/latlong.dart';
+import 'dart:async';
+import 'dart:math' as math;
 
-import '../config/app_config.dart';
+import 'package:flutter/material.dart';
+import 'package:flutter_map/flutter_map.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:latlong2/latlong.dart';
+import 'package:vector_map_tiles/vector_map_tiles.dart';
+
+import '../config/map_config.dart';
+import '../config/theme.dart';
+import '../models/app_settings.dart';
+import '../models/park.dart';
 import '../models/tree.dart';
 import '../models/user_location.dart';
-import '../config/tile_zoom_limits.dart';
+import '../providers/basemap_provider.dart';
 import '../providers/location_provider.dart';
+import '../providers/navigation_provider.dart';
 import '../providers/park_provider.dart';
-import '../providers/tile_zoom_limits_provider.dart';
-import '../services/park_route_service.dart';
-import '../utils/distance_calculator.dart';
-import '../widgets/map_layer_selector.dart';
+import '../providers/settings_provider.dart';
+import '../providers/tree_repository_provider.dart';
+import '../providers/trees_provider.dart';
+import '../services/basemap_service.dart';
+import '../services/park_service.dart';
+import '../services/screen_wake_service.dart';
+import '../widgets/navigation_card.dart';
+import '../widgets/safety_prompt.dart';
+import '../widgets/status_banner.dart';
 import '../widgets/tree_marker_widget.dart';
+import '../widgets/user_location_layer.dart';
 import 'tree_detail_screen.dart';
 
-class ParkMapScreen extends ConsumerStatefulWidget {
+/// Navigation page. The safety reminder is shown first; the map, GPS and
+/// navigation only start after the user taps "Okay". Closing the reminder
+/// with the back button leaves the page.
+class ParkMapScreen extends StatefulWidget {
   const ParkMapScreen({super.key});
 
   @override
-  ConsumerState<ParkMapScreen> createState() => _ParkMapScreenState();
+  State<ParkMapScreen> createState() => _ParkMapScreenState();
 }
 
-class _ParkMapScreenState extends ConsumerState<ParkMapScreen> {
+class _ParkMapScreenState extends State<ParkMapScreen> {
+  bool _acknowledged = false;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) => _askForSafety());
+  }
+
+  Future<void> _askForSafety() async {
+    if (!mounted) return;
+    final accepted = await showSafetyPrompt(context);
+    if (!mounted) return;
+    if (accepted) {
+      setState(() => _acknowledged = true);
+    } else {
+      Navigator.of(context).pop();
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (_acknowledged) return const _ParkMapView();
+    // Nothing behind the reminder: GPS has not started yet and the location
+    // permission dialog cannot appear on top of it.
+    return Scaffold(
+      appBar: AppBar(title: const Text('Park map')),
+      body: const SizedBox.expand(),
+    );
+  }
+}
+
+class _ParkMapView extends ConsumerStatefulWidget {
+  const _ParkMapView();
+
+  @override
+  ConsumerState<_ParkMapView> createState() => _ParkMapViewState();
+}
+
+class _ParkMapViewState extends ConsumerState<_ParkMapView> {
   final MapController _mapController = MapController();
-  LatLng? _lastCenter;
-  double _currentZoom = AppConfig.defaultMapZoom;
-  MapLayerType _layerType = MapLayerType.osm; // Changed to OSM (more reliable)
+  bool _mapReady = false;
+
+  /// Camera follows the (animated) GPS position. Dragging the map stops it;
+  /// the location button or walking into the park starts it again.
+  bool _follow = false;
+
+  /// Whether we already decided to follow for the current park.
+  bool _followDecided = false;
+
+  /// The user picked a park by hand: no automatic park switching.
+  bool _userChosePark = false;
+
+  @override
+  void dispose() {
+    unawaited(ScreenWake.instance.setKeepOn(false));
+    _mapController.dispose();
+    super.dispose();
+  }
+
+  // ---------------------------------------------------------------------------
+  // Park selection and camera
+  // ---------------------------------------------------------------------------
+
+  void _onLocation(UserLocation? location) {
+    if (location == null) return;
+    final park = ref.read(selectedParkProvider);
+    if (park == null) {
+      _autoSelectPark(location);
+      return;
+    }
+    if (!_followDecided) {
+      _followDecided = true;
+      if (park.containsPoint(location.latitude, location.longitude)) {
+        _startFollowing(location);
+      }
+    }
+  }
+
+  /// Opens the park the user is standing in, unless a park was chosen by hand.
+  void _autoSelectPark(UserLocation? location) {
+    if (location == null || _userChosePark) return;
+    if (ref.read(selectedParkProvider) != null) return;
+    final parks = ref.read(parksProvider).valueOrNull?.parks ?? const <Park>[];
+    final membership =
+        findParkMembership(parks, location.latitude, location.longitude);
+    if (membership == null) return;
+    // Change provider state outside of the current notification.
+    Future.microtask(() {
+      if (!mounted) return;
+      ref.read(selectedParkIdProvider.notifier).state = membership.park.id;
+      _followDecided = true;
+      _startFollowing(location);
+    });
+  }
+
+  void _selectPark(Park park) {
+    _userChosePark = true;
+    _followDecided = false;
+    ref.read(selectedParkIdProvider.notifier).state = park.id;
+    final location = ref.read(locationControllerProvider).location;
+    if (location != null && park.containsPoint(location.latitude, location.longitude)) {
+      _followDecided = true;
+      _startFollowing(location);
+    } else {
+      setState(() => _follow = false);
+      _fitToPark(park, location: location);
+    }
+  }
+
+  GeoBounds _boundsFor(Park park, UserLocation? location) {
+    if (location != null) {
+      final area = park.areaIndexAt(location.latitude, location.longitude);
+      if (area != null) return park.areas[area].bounds;
+    }
+    return park.bounds;
+  }
+
+  CameraFit _cameraFit(GeoBounds bounds) => CameraFit.bounds(
+        bounds: LatLngBounds(bounds.southWest, bounds.northEast),
+        padding: const EdgeInsets.fromLTRB(32, 220, 32, 96),
+        maxZoom: MapConfig.fitMaxZoom,
+      );
+
+  void _fitToPark(Park park, {UserLocation? location}) {
+    if (!_mapReady) return;
+    _mapController.fitCamera(_cameraFit(_boundsFor(park, location)));
+  }
+
+  void _startFollowing(UserLocation location) {
+    if (mounted) setState(() => _follow = true);
+    if (!_mapReady) return;
+    final zoom = math.max(_mapController.camera.zoom, MapConfig.followZoom);
+    _mapController.move(location.position, zoom);
+  }
+
+  void _toggleFollow() {
+    final location = ref.read(locationControllerProvider).location;
+    if (_follow || location == null) {
+      setState(() => _follow = false);
+      if (location == null) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('No GPS position yet')),
+        );
+      }
+      return;
+    }
+    _startFollowing(location);
+  }
+
+  void _onAnimatedMove(LatLng position) {
+    if (!_follow || !_mapReady) return;
+    _mapController.move(position, _mapController.camera.zoom);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Points
+  // ---------------------------------------------------------------------------
+
+  void _openPoint(Tree tree) {
+    Navigator.of(context).push(
+      MaterialPageRoute(builder: (_) => TreeDetailScreen(treeId: tree.id)),
+    );
+  }
+
+  Future<void> _setVisited(Tree tree, bool visited) async {
+    await ref.read(treeRepositoryProvider).setTreeVisited(tree.id, visited);
+    ref.invalidate(enabledTreesProvider);
+    ref.invalidate(treeByIdProvider(tree.id));
+    if (!mounted) return;
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(
+        SnackBar(
+          content: Text(visited
+              ? '${tree.filename} marked visited'
+              : '${tree.filename} marked not visited'),
+          action: visited
+              ? SnackBarAction(
+                  label: 'Undo',
+                  onPressed: () => _setVisited(tree, false),
+                )
+              : null,
+        ),
+      );
+  }
+
+  // ---------------------------------------------------------------------------
+  // Build
+  // ---------------------------------------------------------------------------
 
   @override
   Widget build(BuildContext context) {
     final parksAsync = ref.watch(parksProvider);
-    final selectedPark = ref.watch(selectedParkProvider);
-    final locationAsync = ref.watch(locationStreamProvider);
+    final park = ref.watch(selectedParkProvider);
+    final locationState = ref.watch(locationControllerProvider);
+    final navigation = ref.watch(navigationProvider);
     final parkTrees = ref.watch(parkTreesProvider);
-    final parkRoute = ref.watch(parkRouteProvider);
-    final nextTree = ref.watch(nextTreeProvider);
-    
-    final parkPoints = selectedPark != null
-        ? ref.watch(parkPointsProvider(selectedPark.id))
-        : <LatLng>[];
-    final tileZoomLimits = ref.watch(tileZoomLimitsProvider);
+    final basemap = ref.watch(basemapProvider);
+    final settings = ref.watch(settingsProvider);
+
+    ref.listen<bool>(
+      navigationProvider.select((s) => s.isActive),
+      (previous, active) {
+        unawaited(ScreenWake.instance.setKeepOn(active));
+        // Walking into the park starts navigation: follow the user.
+        if (active && previous == false && !_follow) {
+          final location = ref.read(locationControllerProvider).location;
+          if (location != null) _startFollowing(location);
+        }
+      },
+    );
+    ref.listen<UserLocation?>(
+      locationControllerProvider.select((s) => s.location),
+      (_, location) => _onLocation(location),
+    );
+    ref.listen<AsyncValue<ParkLoadResult>>(
+      parksProvider,
+      (_, _) => _autoSelectPark(ref.read(locationControllerProvider).location),
+    );
 
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Park Navigation'),
+        title: Text(park?.name ?? 'Park map'),
         actions: [
           IconButton(
             icon: const Icon(Icons.home),
-            tooltip: 'Go to home',
-            onPressed: () => Navigator.of(
-              context,
-            ).popUntil((route) => route.isFirst),
+            tooltip: 'Home',
+            onPressed: () =>
+                Navigator.of(context).popUntil((route) => route.isFirst),
           ),
         ],
       ),
       body: Column(
         children: [
-          // Park selector dropdown
-          Container(
-            padding: const EdgeInsets.all(8),
-            color: Theme.of(context).colorScheme.surfaceContainerHighest,
-            child: parksAsync.when(
-              data: (parks) {
-                if (parks.isEmpty) {
-                  return const Text('No parks available');
-                }
-                return DropdownButton<String>(
-                  isExpanded: true,
-                  value: selectedPark?.id,
-                  hint: const Text('Select a park'),
-                  items: parks.map((park) {
-                    return DropdownMenuItem(
-                      value: park.id,
-                      child: Text(park.name),
-                    );
-                  }).toList(),
-                  onChanged: (parkId) {
-                    if (parkId != null) {
-                      final park = parks.firstWhere((p) => p.id == parkId);
-                      ref.read(selectedParkProvider.notifier).state = park;
-                      _focusOnPark(park);
-                    }
-                  },
-                );
-              },
-              loading: () => const LinearProgressIndicator(),
-              error: (e, _) => Text('Error loading parks: $e'),
-            ),
+          _ParkSelector(
+            parksAsync: parksAsync,
+            selected: park,
+            onSelected: _selectPark,
           ),
-          // Map view (only after a park is selected)
           Expanded(
-            child: parksAsync.when(
-              loading: () => const Center(child: CircularProgressIndicator()),
-              error: (e, _) => Center(child: Text('Error loading parks: $e')),
-              data: (parks) {
-                if (parks.isEmpty) {
-                  return const Center(child: Text('No parks available'));
-                }
-                if (selectedPark == null) {
-                  return _noParkSelectedPlaceholder(context);
-                }
-                return locationAsync.when(
-                  data: (userLoc) {
-                    return _buildMap(
-                      context,
-                      tileZoomLimits: tileZoomLimits,
-                      userLocation: userLoc,
-                      parkTrees: parkTrees,
-                      parkRoute: parkRoute,
-                      nextTree: nextTree,
-                      parkPoints: parkPoints,
-                    );
-                  },
-                  loading: () => _buildMap(
-                    context,
-                    tileZoomLimits: tileZoomLimits,
-                    userLocation: null,
-                    parkTrees: parkTrees,
-                    parkRoute: parkRoute,
-                    nextTree: nextTree,
-                    parkPoints: parkPoints,
+            child: park == null
+                ? _NoParkPlaceholder(parksAsync: parksAsync)
+                : Stack(
+                    children: [
+                      _buildMap(
+                        park: park,
+                        location: locationState.location,
+                        navigation: navigation,
+                        parkTrees: parkTrees,
+                        basemap: basemap.valueOrNull,
+                        settings: settings,
+                      ),
+                      Positioned(
+                        left: 12,
+                        right: 12,
+                        top: 12,
+                        child: Column(
+                          mainAxisSize: MainAxisSize.min,
+                          crossAxisAlignment: CrossAxisAlignment.stretch,
+                          children: [
+                            ..._buildBanners(locationState, basemap),
+                            NavigationCard(
+                              state: navigation,
+                              parkName: park.name,
+                              areaLabel: navigation.areaIndex == null
+                                  ? ''
+                                  : park.areaLabel(navigation.areaIndex!),
+                              useFeet: settings.useFeet,
+                              onMarkVisited: (tree) => _setVisited(tree, true),
+                              onOpenPoint: _openPoint,
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
                   ),
-                  error: (e, _) => Center(child: Text('Location error: $e')),
-                );
-              },
-            ),
           ),
         ],
       ),
-      floatingActionButton: selectedPark == null
+      floatingActionButton: park == null
           ? null
           : Column(
               mainAxisSize: MainAxisSize.min,
               children: [
                 FloatingActionButton.small(
-                  heroTag: 'layer',
-                  onPressed: () => _showLayerSelector(context, tileZoomLimits),
-                  child: const Icon(Icons.layers),
+                  heroTag: 'fit_park',
+                  tooltip: 'Show whole park',
+                  onPressed: () {
+                    setState(() => _follow = false);
+                    _fitToPark(park, location: locationState.location);
+                  },
+                  child: const Icon(Icons.zoom_out_map),
                 ),
-                const SizedBox(height: 8),
+                const SizedBox(height: 12),
                 FloatingActionButton(
-                  heroTag: 'focus_park',
-                  onPressed: () => _focusOnPark(selectedPark),
-                  child: const Icon(Icons.center_focus_strong),
+                  heroTag: 'follow',
+                  tooltip: _follow ? 'Stop following' : 'Follow my position',
+                  onPressed: _toggleFollow,
+                  child: Icon(_follow ? Icons.my_location : Icons.location_searching),
                 ),
               ],
             ),
     );
   }
 
-  Widget _noParkSelectedPlaceholder(BuildContext context) {
+  Widget _buildMap({
+    required Park park,
+    required UserLocation? location,
+    required NavigationState navigation,
+    required ParkTrees parkTrees,
+    required Basemap? basemap,
+    required AppSettings settings,
+  }) {
+    final target = navigation.isActive ? navigation.target : null;
+    final route = navigation.isActive ? navigation.routeAfterUser : const <LatLng>[];
+    final glide = Duration(
+      milliseconds: (settings.gpsIntervalSeconds * 1000).clamp(300, 1000),
+    );
+
+    return FlutterMap(
+      mapController: _mapController,
+      options: MapOptions(
+        initialCameraFit: _cameraFit(_boundsFor(park, location)),
+        minZoom: MapConfig.minZoom,
+        maxZoom: MapConfig.maxZoom,
+        backgroundColor: MapConfig.backgroundColor,
+        interactionOptions: const InteractionOptions(
+          // North-up map: arrows and bearings stay meaningful.
+          flags: InteractiveFlag.all & ~InteractiveFlag.rotate,
+        ),
+        onMapReady: () {
+          _mapReady = true;
+          final current = ref.read(locationControllerProvider).location;
+          if (_follow && current != null) {
+            _mapController.move(
+              current.position,
+              math.max(_mapController.camera.zoom, MapConfig.followZoom),
+            );
+          }
+        },
+        onMapEvent: (event) {
+          // Dragging the map stops following; pinch-zoom keeps it.
+          if (_follow &&
+              (event.source == MapEventSource.dragStart ||
+                  event.source == MapEventSource.onDrag)) {
+            setState(() => _follow = false);
+          }
+        },
+      ),
+      children: [
+        if (basemap != null && basemap.isReady)
+          VectorTileLayer(
+            tileProviders: basemap.tileProviders!,
+            theme: basemap.theme!,
+            layerMode: VectorTileLayerMode.raster,
+            maximumZoom: MapConfig.maxZoom,
+          ),
+        PolygonLayer(
+          polygons: [
+            for (final area in park.areas)
+              Polygon(
+                points: area.outer,
+                holePointsList: area.holes.isEmpty ? null : area.holes,
+                color: AppTheme.parkBorderColor.withValues(alpha: 0.06),
+                borderColor: AppTheme.parkBorderColor,
+                borderStrokeWidth: 2.5,
+              ),
+          ],
+        ),
+        if (route.length >= 2)
+          PolylineLayer(
+            polylines: [
+              Polyline(
+                points: route,
+                color: AppTheme.routeColor.withValues(alpha: 0.6),
+                strokeWidth: 3,
+                pattern: StrokePattern.dashed(segments: const [12, 8]),
+              ),
+            ],
+          ),
+        MarkerLayer(markers: _pointMarkers(parkTrees, target)),
+        UserLocationLayer(
+          location: location,
+          target: target?.position,
+          duration: glide,
+          onAnimatedMove: _onAnimatedMove,
+        ),
+        const SimpleAttributionWidget(
+          source: Text(MapConfig.attribution),
+          alignment: Alignment.bottomLeft,
+        ),
+      ],
+    );
+  }
+
+  List<Marker> _pointMarkers(ParkTrees parkTrees, Tree? target) {
+    final entries = <(Tree, PointMarkerKind)>[
+      for (final tree in parkTrees.all)
+        (
+          tree,
+          !parkTrees.isInPark(tree)
+              ? PointMarkerKind.outside
+              : tree.visited
+                  ? PointMarkerKind.visited
+                  : tree.id == target?.id
+                      ? PointMarkerKind.target
+                      : PointMarkerKind.pending,
+        ),
+    ]..sort((a, b) => a.$2.paintOrder.compareTo(b.$2.paintOrder));
+
+    return [
+      for (final (tree, kind) in entries)
+        Marker(
+          key: ValueKey(tree.id),
+          point: tree.position,
+          width: kind.size,
+          height: kind.size,
+          child: PointMarker(kind: kind, onTap: () => _openPoint(tree)),
+        ),
+    ];
+  }
+
+  List<Widget> _buildBanners(
+    LocationState locationState,
+    AsyncValue<Basemap> basemap,
+  ) {
+    final controller = ref.read(locationControllerProvider.notifier);
+    final banners = <Widget>[];
+    switch (locationState.status) {
+      case LocationStatus.serviceDisabled:
+        banners.add(StatusBanner(
+          icon: Icons.location_disabled,
+          message: 'Location is turned off.',
+          actionLabel: 'Turn on',
+          onAction: controller.openLocationSettings,
+        ));
+      case LocationStatus.permissionDenied:
+        banners.add(StatusBanner(
+          icon: Icons.location_off,
+          message: 'Location permission is needed for navigation.',
+          actionLabel: 'Allow',
+          onAction: controller.restart,
+        ));
+      case LocationStatus.permissionDeniedForever:
+        banners.add(StatusBanner(
+          icon: Icons.location_off,
+          message: 'Location permission was denied. Enable it in app settings.',
+          actionLabel: 'Settings',
+          onAction: controller.openAppSettings,
+        ));
+      case LocationStatus.unavailable:
+        banners.add(StatusBanner(
+          icon: Icons.error_outline,
+          message: 'GPS unavailable: ${locationState.message ?? 'unknown error'}',
+          actionLabel: 'Retry',
+          onAction: controller.restart,
+        ));
+      case LocationStatus.starting:
+      case LocationStatus.ready:
+        break;
+    }
+    if (locationState.status == LocationStatus.ready && locationState.approximate) {
+      banners.add(StatusBanner(
+        icon: Icons.gps_off,
+        message: 'Only approximate location is allowed; positions can be '
+            'off by kilometres. Allow "precise" location.',
+        actionLabel: 'Settings',
+        onAction: controller.openAppSettings,
+      ));
+    }
+    final map = basemap.valueOrNull;
+    if (map != null && !map.isReady) {
+      banners.add(StatusBanner(
+        icon: Icons.map_outlined,
+        message: map.message ?? 'Offline map unavailable.',
+      ));
+    }
+    return banners;
+  }
+}
+
+class _ParkSelector extends StatelessWidget {
+  const _ParkSelector({
+    required this.parksAsync,
+    required this.selected,
+    required this.onSelected,
+  });
+
+  final AsyncValue<ParkLoadResult> parksAsync;
+  final Park? selected;
+  final ValueChanged<Park> onSelected;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+      color: Theme.of(context).colorScheme.surfaceContainerHighest,
+      child: parksAsync.when(
+        loading: () => const LinearProgressIndicator(),
+        error: (e, _) => Text('Could not load parks: $e'),
+        data: (result) {
+          return Row(
+            children: [
+              Expanded(
+                child: result.parks.isEmpty
+                    ? const Text('No parks bundled (add GeoJSON files to parks/)')
+                    : DropdownButton<String>(
+                        isExpanded: true,
+                        value: selected?.id,
+                        hint: const Text('Select a park'),
+                        underline: const SizedBox.shrink(),
+                        items: [
+                          for (final park in result.parks)
+                            DropdownMenuItem(
+                              value: park.id,
+                              child: Text(
+                                park.areas.length > 1
+                                    ? '${park.name} (${park.areas.length} areas)'
+                                    : park.name,
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                            ),
+                        ],
+                        onChanged: (id) {
+                          for (final park in result.parks) {
+                            if (park.id == id) onSelected(park);
+                          }
+                        },
+                      ),
+              ),
+              if (result.errors.isNotEmpty)
+                IconButton(
+                  tooltip: 'Park files with errors',
+                  icon: Icon(Icons.warning_amber,
+                      color: Theme.of(context).colorScheme.error),
+                  onPressed: () => showDialog<void>(
+                    context: context,
+                    builder: (ctx) => AlertDialog(
+                      title: const Text('Park files that could not be loaded'),
+                      content: SingleChildScrollView(
+                        child: Text(result.errors.join('\n\n')),
+                      ),
+                      actions: [
+                        TextButton(
+                          onPressed: () => Navigator.pop(ctx),
+                          child: const Text('OK'),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+            ],
+          );
+        },
+      ),
+    );
+  }
+}
+
+class _NoParkPlaceholder extends StatelessWidget {
+  const _NoParkPlaceholder({required this.parksAsync});
+
+  final AsyncValue<ParkLoadResult> parksAsync;
+
+  @override
+  Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    final hasParks = parksAsync.valueOrNull?.parks.isNotEmpty ?? false;
     return Center(
       child: Padding(
         padding: const EdgeInsets.all(24),
         child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
+          mainAxisSize: MainAxisSize.min,
           children: [
             Icon(Icons.map_outlined, size: 56, color: theme.colorScheme.outline),
             const SizedBox(height: 16),
-            Text(
-              'No park selected',
-              style: theme.textTheme.titleLarge,
-              textAlign: TextAlign.center,
-            ),
+            Text('No park selected',
+                style: theme.textTheme.titleLarge, textAlign: TextAlign.center),
             const SizedBox(height: 8),
             Text(
-              'Choose a park above to show the map.',
-              style: theme.textTheme.bodyMedium?.copyWith(
-                color: theme.colorScheme.onSurfaceVariant,
-              ),
+              hasParks
+                  ? 'Choose a park above. When you are inside a park it opens '
+                      'automatically once GPS has a fix.'
+                  : 'Add park boundaries to parks/*.geojson, run '
+                      'tools/build_map.py and rebuild the app.',
+              style: theme.textTheme.bodyMedium
+                  ?.copyWith(color: theme.colorScheme.onSurfaceVariant),
               textAlign: TextAlign.center,
             ),
           ],
@@ -179,564 +635,4 @@ class _ParkMapScreenState extends ConsumerState<ParkMapScreen> {
       ),
     );
   }
-
-  Widget _buildMap(
-    BuildContext context, {
-    required TileZoomLimits tileZoomLimits,
-    required UserLocation? userLocation,
-    required List<Tree> parkTrees,
-    required ParkRoute? parkRoute,
-    required Tree? nextTree,
-    required List<LatLng> parkPoints,
-  }) {
-    final selectedPark = ref.watch(selectedParkProvider);
-    
-    // Check if user is inside the park boundary
-    final isUserInPark = selectedPark != null && 
-        userLocation != null && 
-        selectedPark.containsPoint(userLocation.latitude, userLocation.longitude);
-
-    return Stack(
-      children: [
-        FlutterMap(
-          mapController: _mapController,
-          options: MapOptions(
-            initialCenter: _lastCenter ?? selectedPark!.center,
-            initialZoom: _currentZoom,
-            minZoom: tileZoomLimits.minZoomForMap,
-            maxZoom: maxZoomForLayerType(_layerType, tileZoomLimits),
-            onPositionChanged: (position, hasGesture) {
-              _lastCenter = position.center;
-              if (position.zoom != null) {
-                _currentZoom = position.zoom!;
-              }
-            },
-          ),
-          children: [
-            tileLayerForType(_layerType, tileZoomLimits),
-            // Draw park boundary
-            if (selectedPark != null) _buildParkBoundaryLayer(selectedPark),
-            // Draw park points as polygon boundary
-            if (parkPoints.isNotEmpty) _buildPointsPolygonLayer(parkPoints),
-            // Draw closed-loop route - only if user is inside the park
-            if (parkRoute != null && isUserInPark) _buildRouteLayer(parkRoute),
-            // Draw user location with animated marker
-            if (userLocation != null)
-              MarkerLayer(
-                markers: [
-                  Marker(
-                    point: LatLng(
-                      userLocation.latitude,
-                      userLocation.longitude,
-                    ),
-                    width: 60,
-                    height: 60,
-                    child: _AnimatedUserMarker(
-                      isNavigating: isUserInPark && nextTree != null,
-                      heading: userLocation.heading ?? -1.0, // -1 means no heading
-                    ),
-                  ),
-                ],
-              ),
-            // Draw point markers (from CSV) as tree locations
-            if (parkPoints.isNotEmpty) _buildPointMarkersLayer(parkPoints),
-            // Draw tree markers (from imported GeoJSON)
-            if (parkTrees.isNotEmpty)
-              MarkerLayer(
-                markers: parkTrees.map((tree) {
-                  final isNext = nextTree?.id == tree.id;
-                  return Marker(
-                    point: LatLng(tree.latitude, tree.longitude),
-                    width: isNext ? 50 : 40,
-                    height: isNext ? 50 : 40,
-                    child: GestureDetector(
-                      onTap: () => _onTreeTap(tree),
-                      child: TreeMarkerWidget(
-                        tree: tree,
-                        isHighlighted: isNext,
-                      ),
-                    ),
-                  );
-                }).toList(),
-              ),
-          ],
-        ),
-        // Navigation info card - only show if user is in the park
-        if (nextTree != null && userLocation != null && selectedPark != null && isUserInPark)
-          Positioned(
-            left: 16,
-            top: 16,
-            right: 16,
-            child: _NavigationCard(
-              nextTree: nextTree,
-              userLocation: userLocation,
-              parkRoute: parkRoute,
-            ),
-          ),
-        // Route statistics - only show if user is in the park
-        if (parkRoute != null && selectedPark != null && isUserInPark)
-          Positioned(
-            left: 16,
-            bottom: 16,
-            child: _RouteStatsCard(route: parkRoute),
-          ),
-        // Navigation active indicator
-        if (isUserInPark && nextTree != null)
-          Positioned(
-            right: 16,
-            top: 16,
-            child: Card(
-              elevation: 4,
-              color: Colors.green.shade50,
-              child: Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Container(
-                      width: 12,
-                      height: 12,
-                      decoration: const BoxDecoration(
-                        shape: BoxShape.circle,
-                        color: Colors.green,
-                      ),
-                    ),
-                    const SizedBox(width: 8),
-                    const Text(
-                      'Navigation Active',
-                      style: TextStyle(
-                        color: Colors.green,
-                        fontWeight: FontWeight.bold,
-                        fontSize: 12,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            ),
-          ),
-      ],
-    );
-  }
-
-  PolygonLayer _buildParkBoundaryLayer(park) {
-    return PolygonLayer(
-      polygons: [
-        Polygon(
-          points: park.boundary,
-          color: Colors.green.withOpacity(0.1),
-          borderColor: Colors.green,
-          borderStrokeWidth: 3.0,
-          isFilled: true,
-        ),
-      ],
-    );
-  }
-
-  PolylineLayer _buildRouteLayer(ParkRoute route) {
-    return PolylineLayer(
-      polylines: [
-        Polyline(
-          points: route.pathPoints,
-          color: Colors.purple.withOpacity(0.7),
-          strokeWidth: 4.0,
-          borderColor: Colors.white,
-          borderStrokeWidth: 1.0,
-        ),
-      ],
-    );
-  }
-  
-  /// Build polygon layer for park points (closed boundary covering all points)
-  PolygonLayer _buildPointsPolygonLayer(List<LatLng> points) {
-    return PolygonLayer(
-      polygons: [
-        Polygon(
-          points: points,
-          color: Colors.orange.withOpacity(0.15),
-          borderColor: Colors.orange.withOpacity(0.8),
-          borderStrokeWidth: 2.0,
-          isFilled: true,
-          isDotted: true,
-        ),
-      ],
-    );
-  }
-  
-  /// Build marker layer for park points (showing actual point locations)
-  MarkerLayer _buildPointMarkersLayer(List<LatLng> points) {
-    return MarkerLayer(
-      markers: points.map((point) {
-        return Marker(
-          point: point,
-          width: 24,
-          height: 24,
-          child: Container(
-            decoration: BoxDecoration(
-              color: Colors.orange,
-              shape: BoxShape.circle,
-              border: Border.all(color: Colors.white, width: 2),
-              boxShadow: const [
-                BoxShadow(
-                  color: Colors.black26,
-                  blurRadius: 4,
-                  offset: Offset(0, 2),
-                ),
-              ],
-            ),
-            child: const Icon(
-              Icons.location_on,
-              color: Colors.white,
-              size: 14,
-            ),
-          ),
-        );
-      }).toList(),
-    );
-  }
-
-  void _onTreeTap(Tree tree) {
-    Navigator.push(
-      context,
-      MaterialPageRoute(
-        builder: (_) => TreeDetailScreen(treeId: tree.id),
-      ),
-    );
-  }
-
-  /// Fits the camera to [park] bounds. Must run after [FlutterMap] has mounted
-  /// and wired [MapController]; otherwise [fitCamera] throws (e.g. first park selection).
-  void _focusOnPark(park) {
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!mounted) return;
-      final bounds = park.bounds;
-      _mapController.fitCamera(
-        CameraFit.bounds(
-          bounds: LatLngBounds(
-            bounds.southwest,
-            bounds.northeast,
-          ),
-          padding: const EdgeInsets.all(50),
-        ),
-      );
-    });
-  }
-
-  void _showLayerSelector(BuildContext context, TileZoomLimits limits) {
-    showDialog(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Select Map Layer'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            ListTile(
-              title: const Text('OpenStreetMap'),
-              leading: Radio<MapLayerType>(
-                value: MapLayerType.osm,
-                groupValue: _layerType,
-                onChanged: (value) {
-                  if (value != null) {
-                    setState(() {
-                      _layerType = value;
-                      final cap = maxZoomForLayerType(value, limits);
-                      if (_currentZoom > cap) {
-                        _currentZoom = cap;
-                        if (_lastCenter != null) {
-                          _mapController.move(_lastCenter!, _currentZoom);
-                        }
-                      }
-                    });
-                    Navigator.pop(context);
-                  }
-                },
-              ),
-            ),
-            ListTile(
-              title: const Text('Topographic'),
-              leading: Radio<MapLayerType>(
-                value: MapLayerType.topo,
-                groupValue: _layerType,
-                onChanged: (value) {
-                  if (value != null) {
-                    setState(() {
-                      _layerType = value;
-                      final cap = maxZoomForLayerType(value, limits);
-                      if (_currentZoom > cap) {
-                        _currentZoom = cap;
-                        if (_lastCenter != null) {
-                          _mapController.move(_lastCenter!, _currentZoom);
-                        }
-                      }
-                    });
-                    Navigator.pop(context);
-                  }
-                },
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
 }
-
-class _NavigationCard extends ConsumerWidget {
-  const _NavigationCard({
-    required this.nextTree,
-    required this.userLocation,
-    required this.parkRoute,
-  });
-
-  final Tree nextTree;
-  final UserLocation userLocation;
-  final ParkRoute? parkRoute;
-
-  @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    final distance = calculateDistance(
-      userLocation.latitude,
-      userLocation.longitude,
-      nextTree.latitude,
-      nextTree.longitude,
-    );
-
-    final bearing = ParkRouteService.calculateBearing(
-      fromLat: userLocation.latitude,
-      fromLng: userLocation.longitude,
-      toLat: nextTree.latitude,
-      toLng: nextTree.longitude,
-    );
-
-    final pathDistance = parkRoute?.getDistanceToTree(nextTree) ?? distance;
-
-    return Card(
-      elevation: 8,
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              children: [
-                const Icon(Icons.navigation, color: Colors.purple, size: 32),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      const Text(
-                        'Next Tree',
-                        style: TextStyle(
-                          fontSize: 12,
-                          color: Colors.grey,
-                        ),
-                      ),
-                      Text(
-                        nextTree.filename,
-                        style: const TextStyle(
-                          fontSize: 16,
-                          fontWeight: FontWeight.bold,
-                        ),
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                      ),
-                    ],
-                  ),
-                ),
-              ],
-            ),
-            const Divider(),
-            Row(
-              mainAxisAlignment: MainAxisAlignment.spaceAround,
-              children: [
-                Column(
-                  children: [
-                    Text(
-                      formatDistance(distance),
-                      style: const TextStyle(
-                        fontSize: 20,
-                        fontWeight: FontWeight.bold,
-                        color: Colors.blue,
-                      ),
-                    ),
-                    const Text('Direct', style: TextStyle(fontSize: 12)),
-                  ],
-                ),
-                Column(
-                  children: [
-                    Text(
-                      formatDistance(pathDistance),
-                      style: const TextStyle(
-                        fontSize: 20,
-                        fontWeight: FontWeight.bold,
-                        color: Colors.purple,
-                      ),
-                    ),
-                    const Text('On Path', style: TextStyle(fontSize: 12)),
-                  ],
-                ),
-                Column(
-                  children: [
-                    Text(
-                      _getDirectionText(bearing),
-                      style: const TextStyle(
-                        fontSize: 20,
-                        fontWeight: FontWeight.bold,
-                        color: Colors.orange,
-                      ),
-                    ),
-                    const Text('Direction', style: TextStyle(fontSize: 12)),
-                  ],
-                ),
-              ],
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  String _getDirectionText(double bearing) {
-    const directions = ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW'];
-    final index = ((bearing + 22.5) / 45).floor() % 8;
-    return directions[index];
-  }
-}
-
-class _RouteStatsCard extends StatelessWidget {
-  const _RouteStatsCard({required this.route});
-
-  final ParkRoute route;
-
-  @override
-  Widget build(BuildContext context) {
-    final visited = route.trees.where((t) => t.visited).length;
-    final total = route.trees.length;
-
-    return Card(
-      child: Padding(
-        padding: const EdgeInsets.all(12),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const Text(
-              'Route Progress',
-              style: TextStyle(fontWeight: FontWeight.bold),
-            ),
-            const SizedBox(height: 8),
-            Text('$visited of $total trees visited'),
-            Text('Loop: ${formatDistance(route.totalDistance)}'),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-/// Animated user location marker with pulsing effect and heading indicator
-class _AnimatedUserMarker extends StatefulWidget {
-  const _AnimatedUserMarker({
-    required this.isNavigating,
-    required this.heading,
-  });
-
-  final bool isNavigating;
-  final double heading;
-
-  @override
-  State<_AnimatedUserMarker> createState() => _AnimatedUserMarkerState();
-}
-
-class _AnimatedUserMarkerState extends State<_AnimatedUserMarker>
-    with SingleTickerProviderStateMixin {
-  late AnimationController _controller;
-  late Animation<double> _animation;
-
-  @override
-  void initState() {
-    super.initState();
-    _controller = AnimationController(
-      duration: const Duration(milliseconds: 1500),
-      vsync: this,
-    )..repeat(reverse: true);
-
-    _animation = Tween<double>(begin: 0.8, end: 1.2).animate(
-      CurvedAnimation(parent: _controller, curve: Curves.easeInOut),
-    );
-  }
-
-  @override
-  void dispose() {
-    _controller.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return AnimatedBuilder(
-      animation: _animation,
-      builder: (context, child) {
-        return Stack(
-          alignment: Alignment.center,
-          children: [
-            // Pulsing outer circle (only when navigating)
-            if (widget.isNavigating)
-              Container(
-                width: 60 * _animation.value,
-                height: 60 * _animation.value,
-                decoration: BoxDecoration(
-                  shape: BoxShape.circle,
-                  color: Colors.blue.withOpacity(0.3 / _animation.value),
-                  border: Border.all(
-                    color: Colors.blue.withOpacity(0.5 / _animation.value),
-                    width: 2,
-                  ),
-                ),
-              ),
-            // Accuracy circle
-            Container(
-              width: 40,
-              height: 40,
-              decoration: BoxDecoration(
-                shape: BoxShape.circle,
-                color: widget.isNavigating 
-                    ? Colors.green.withOpacity(0.3)
-                    : Colors.blue.withOpacity(0.3),
-                border: Border.all(
-                  color: widget.isNavigating ? Colors.green : Colors.blue,
-                  width: 3,
-                ),
-              ),
-            ),
-            // Direction arrow (if heading available and navigating)
-            if (widget.isNavigating && widget.heading >= 0)
-              Transform.rotate(
-                angle: widget.heading * (3.14159265359 / 180.0),
-                child: Icon(
-                  Icons.navigation,
-                  color: widget.isNavigating ? Colors.green : Colors.blue,
-                  size: 24,
-                  shadows: const [
-                    Shadow(blurRadius: 4, color: Colors.white),
-                  ],
-                ),
-              )
-            else
-              // User icon when not navigating or no heading
-              Icon(
-                Icons.person,
-                color: widget.isNavigating ? Colors.green : Colors.blue,
-                size: 20,
-                shadows: const [
-                  Shadow(blurRadius: 4, color: Colors.white),
-                ],
-              ),
-          ],
-        );
-      },
-    );
-  }
-}
-

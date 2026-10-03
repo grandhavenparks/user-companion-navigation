@@ -1,0 +1,2 @@
+# Python dependencies for tools/build_map.py
+pmtiles>=3.4,<4

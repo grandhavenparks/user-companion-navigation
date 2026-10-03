@@ -1,4 +1,5 @@
 import 'package:flutter/foundation.dart';
+import 'package:latlong2/latlong.dart';
 
 /// Current user GPS position and metadata.
 @immutable
@@ -6,34 +7,39 @@ class UserLocation {
   const UserLocation({
     required this.latitude,
     required this.longitude,
+    required this.timestamp,
     this.accuracy,
     this.altitude,
     this.heading,
-    this.timestamp,
+    this.speed,
   });
 
   final double latitude;
   final double longitude;
+  final DateTime timestamp;
+
+  /// Horizontal accuracy radius in metres.
   final double? accuracy;
   final double? altitude;
-  final double? heading;
-  final DateTime? timestamp;
 
-  UserLocation copyWith({
-    double? latitude,
-    double? longitude,
-    double? accuracy,
-    double? altitude,
-    double? heading,
-    DateTime? timestamp,
-  }) {
-    return UserLocation(
-      latitude: latitude ?? this.latitude,
-      longitude: longitude ?? this.longitude,
-      accuracy: accuracy ?? this.accuracy,
-      altitude: altitude ?? this.altitude,
-      heading: heading ?? this.heading,
-      timestamp: timestamp ?? this.timestamp,
-    );
-  }
+  /// Direction of travel in degrees (0 = north); null when standing still.
+  final double? heading;
+
+  /// Speed in m/s.
+  final double? speed;
+
+  LatLng get position => LatLng(latitude, longitude);
+
+  @override
+  bool operator ==(Object other) =>
+      other is UserLocation &&
+      other.latitude == latitude &&
+      other.longitude == longitude &&
+      other.timestamp == timestamp &&
+      other.accuracy == accuracy &&
+      other.heading == heading;
+
+  @override
+  int get hashCode =>
+      Object.hash(latitude, longitude, timestamp, accuracy, heading);
 }

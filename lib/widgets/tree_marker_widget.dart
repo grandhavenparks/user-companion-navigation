@@ -1,57 +1,79 @@
 import 'package:flutter/material.dart';
 
 import '../config/theme.dart';
-import '../models/tree.dart';
 
-class TreeMarkerWidget extends StatelessWidget {
-  const TreeMarkerWidget({
-    super.key,
-    required this.tree,
-    this.isHighlighted = false,
-  });
+/// How a point is drawn. Points are not coloured by health classification.
+enum PointMarkerKind {
+  /// Unvisited point inside the selected park.
+  pending,
 
-  final Tree tree;
-  final bool isHighlighted;
+  /// The point you are being navigated to.
+  target,
+
+  /// Marked visited.
+  visited,
+
+  /// Outside the selected park: shown, never navigated.
+  outside,
+}
+
+extension PointMarkerKindSize on PointMarkerKind {
+  /// Size of the marker box on the map.
+  double get size => switch (this) {
+        PointMarkerKind.target => 46,
+        PointMarkerKind.pending => 30,
+        PointMarkerKind.visited => 28,
+        PointMarkerKind.outside => 22,
+      };
+
+  /// Drawing order: higher values are painted on top.
+  int get paintOrder => switch (this) {
+        PointMarkerKind.outside => 0,
+        PointMarkerKind.visited => 1,
+        PointMarkerKind.pending => 2,
+        PointMarkerKind.target => 3,
+      };
+}
+
+class PointMarker extends StatelessWidget {
+  const PointMarker({super.key, required this.kind, this.onTap});
+
+  final PointMarkerKind kind;
+  final VoidCallback? onTap;
 
   @override
   Widget build(BuildContext context) {
-    final color = _colorFor(tree.treeClassification);
-    final size = isHighlighted ? 28.0 : 20.0;
-    
-    return Container(
-      decoration: BoxDecoration(
-        color: color,
-        shape: BoxShape.circle,
-        border: Border.all(
-          color: isHighlighted 
-              ? Colors.yellow 
-              : (tree.visited ? Colors.white : color.withOpacity(0.8)),
-          width: isHighlighted ? 4 : (tree.visited ? 3 : 2),
-        ),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black26,
-            blurRadius: isHighlighted ? 6 : 4,
-            offset: const Offset(0, 2),
+    final (color, icon, iconSize, border) = switch (kind) {
+      PointMarkerKind.target => (AppTheme.targetColor, Icons.flag, 24.0, 4.0),
+      PointMarkerKind.pending => (AppTheme.pointColor, Icons.place, 16.0, 2.0),
+      PointMarkerKind.visited => (AppTheme.visitedColor, Icons.check, 16.0, 2.0),
+      PointMarkerKind.outside => (AppTheme.outsideColor, null, 0.0, 2.0),
+    };
+    return GestureDetector(
+      onTap: onTap,
+      behavior: HitTestBehavior.opaque,
+      child: Center(
+        child: Container(
+          width: kind.size - 4,
+          height: kind.size - 4,
+          decoration: BoxDecoration(
+            color: color,
+            shape: BoxShape.circle,
+            border: Border.all(
+              color: kind == PointMarkerKind.target
+                  ? const Color(0xFFFFEB3B)
+                  : Colors.white,
+              width: border,
+            ),
+            boxShadow: const [
+              BoxShadow(color: Colors.black26, blurRadius: 4, offset: Offset(0, 2)),
+            ],
           ),
-        ],
-      ),
-      child: Icon(
-        tree.visited ? Icons.check : Icons.place,
-        color: Colors.white,
-        size: size,
+          child: icon == null
+              ? null
+              : Icon(icon, color: Colors.white, size: iconSize),
+        ),
       ),
     );
-  }
-
-  static Color _colorFor(TreeClassification c) {
-    switch (c) {
-      case TreeClassification.environment:
-        return AppTheme.environmentColor;
-      case TreeClassification.sick:
-        return AppTheme.sickColor;
-      case TreeClassification.dead:
-        return AppTheme.deadColor;
-    }
   }
 }

@@ -1,51 +1,31 @@
-import 'package:flutter_map/flutter_map.dart';
+import 'dart:ui';
 
-import '../services/map_cache_service.dart';
-import 'tile_zoom_limits.dart';
-
-/// Map tile layer configuration - OpenStreetMap and OpenTopoMap (free, no API keys).
+/// Offline basemap configuration (Protomaps vector tiles bundled as MBTiles).
 class MapConfig {
   MapConfig._();
 
-  static const String osmAttribution =
-      '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors';
-  static const String topoAttribution =
-      '© <a href="https://opentopomap.org/">OpenTopoMap</a> contributors';
+  /// Written by `tools/build_map.py`.
+  static const String basemapAsset = 'assets/map/basemap.mbtiles';
+  static const String manifestAsset = 'assets/map/map_manifest.json';
 
-  static const double tileSize = 256.0;
-  static const int panBuffer = 1;
+  /// Protomaps "light" style, version 4 (CC0), shipped with the app.
+  static const String styleAsset = 'assets/map/protomaps_light_v4.json';
 
-  /// OSM raster tiles — max zoom must match [TileZoomLimits.maxZoomOsm] from `download_tiles.py`.
-  static TileLayer osmTileLayer(TileZoomLimits limits) {
-    final maxZ = limits.maxZoomOsm;
-    final z = maxZ.toDouble();
-    return TileLayer(
-      urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
-      userAgentPackageName: 'com.edgeforestry.edge_forestry_mobile',
-      maxZoom: z,
-      minZoom: limits.minZoomForMap,
-      maxNativeZoom: maxZ,
-      tileSize: tileSize,
-      panBuffer: panBuffer,
-      tileProvider: MapCacheService.instance.getTileProvider(MapCacheService.osmStoreName),
-      errorTileCallback: (tile, error, stackTrace) {},
-    );
-  }
+  /// Source id used by the style's layers.
+  static const String tileSourceId = 'protomaps';
 
-  /// OpenTopoMap — max zoom is at most [TileZoomLimits.maxZoomTopo] (server max 17).
-  static TileLayer openTopoMapLayer(TileZoomLimits limits) {
-    final maxZ = limits.maxZoomTopo;
-    final z = maxZ.toDouble();
-    return TileLayer(
-      urlTemplate: 'https://tile.opentopomap.org/{z}/{x}/{y}.png',
-      userAgentPackageName: 'com.edgeforestry.edge_forestry_mobile',
-      maxZoom: z,
-      minZoom: limits.minZoomForMap,
-      maxNativeZoom: maxZ,
-      tileSize: tileSize,
-      panBuffer: panBuffer,
-      tileProvider: MapCacheService.instance.getTileProvider(MapCacheService.topoStoreName),
-      errorTileCallback: (tile, error, stackTrace) {},
-    );
-  }
+  /// Vector data stops at z15; tiles are rendered sharply up to [maxZoom].
+  static const double minZoom = 3;
+  static const double maxZoom = 24;
+
+  /// Zoom used when the map starts following the user.
+  static const double followZoom = 18;
+
+  /// Upper bound when fitting the camera to a park or area.
+  static const double fitMaxZoom = 19;
+
+  static const String attribution = '© OpenStreetMap contributors, Protomaps';
+
+  /// Shown where no map data exists (outside the bundled extract).
+  static const Color backgroundColor = Color(0xFFE0E0E0);
 }

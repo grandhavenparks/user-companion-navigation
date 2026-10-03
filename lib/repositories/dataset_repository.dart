@@ -1,4 +1,5 @@
 import '../models/dataset.dart';
+import '../models/tree.dart';
 import '../services/database_service.dart';
 
 class DatasetRepository {
@@ -8,9 +9,9 @@ class DatasetRepository {
 
   Future<List<Dataset>> getAllDatasets() => _db.getAllDatasets();
 
-  Future<Dataset?> getDatasetById(String id) => _db.getDatasetById(id);
-
-  Future<void> saveDataset(Dataset dataset) => _db.insertDataset(dataset);
+  /// Saves the dataset and its points atomically.
+  Future<void> importDataset(Dataset dataset, List<Tree> trees) =>
+      _db.insertDatasetWithTrees(dataset, trees);
 
   Future<void> setDatasetEnabled(String id, bool enabled) =>
       _db.updateDatasetEnabled(id, enabled);

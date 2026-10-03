@@ -1,84 +1,125 @@
+import 'dart:math' as math;
+
+import 'package:flutter/foundation.dart';
 import 'package:latlong2/latlong.dart';
 
-/// Represents a park area with its boundary polygon
+/// Axis-aligned latitude/longitude box.
+@immutable
+class GeoBounds {
+  const GeoBounds({
+    required this.south,
+    required this.west,
+    required this.north,
+    required this.east,
+  });
+
+  factory GeoBounds.fromPoints(Iterable<LatLng> points) {
+    var south = 90.0, north = -90.0, west = 180.0, east = -180.0;
+    var any = false;
+    for (final p in points) {
+      any = true;
+      south = math.min(south, p.latitude);
+      north = math.max(north, p.latitude);
+      west = math.min(west, p.longitude);
+      east = math.max(east, p.longitude);
+    }
+    if (!any) {
+      throw ArgumentError('GeoBounds.fromPoints needs at least one point');
+    }
+    return GeoBounds(south: south, west: west, north: north, east: east);
+  }
+
+  final double south;
+  final double west;
+  final double north;
+  final double east;
+
+  bool contains(double lat, double lng) =>
+      lat >= south && lat <= north && lng >= west && lng <= east;
+
+  GeoBounds union(GeoBounds other) => GeoBounds(
+        south: math.min(south, other.south),
+        west: math.min(west, other.west),
+        north: math.max(north, other.north),
+        east: math.max(east, other.east),
+      );
+
+  LatLng get southWest => LatLng(south, west);
+  LatLng get northEast => LatLng(north, east);
+  LatLng get center => LatLng((south + north) / 2, (west + east) / 2);
+}
+
+/// Even-odd point-in-polygon test. Works for open and closed rings and
+/// counts every edge exactly once (half-open crossing rule).
+bool ringContains(List<LatLng> ring, double lat, double lng) {
+  var inside = false;
+  final n = ring.length;
+  if (n < 3) return false;
+  for (var i = 0, j = n - 1; i < n; j = i++) {
+    final yi = ring[i].latitude;
+    final xi = ring[i].longitude;
+    final yj = ring[j].latitude;
+    final xj = ring[j].longitude;
+    if ((yi > lat) != (yj > lat)) {
+      final xCross = (xj - xi) * (lat - yi) / (yj - yi) + xi;
+      if (lng < xCross) inside = !inside;
+    }
+  }
+  return inside;
+}
+
+/// One polygon of a park (outer boundary plus optional holes).
+@immutable
+class ParkArea {
+  ParkArea({required this.outer, this.holes = const []})
+      : bounds = GeoBounds.fromPoints(outer);
+
+  final List<LatLng> outer;
+  final List<List<LatLng>> holes;
+  final GeoBounds bounds;
+
+  bool contains(double lat, double lng) {
+    if (!bounds.contains(lat, lng)) return false;
+    if (!ringContains(outer, lat, lng)) return false;
+    for (final hole in holes) {
+      if (ringContains(hole, lat, lng)) return false;
+    }
+    return true;
+  }
+}
+
+/// A park declared by a GeoJSON file in `parks/`. A park can consist of
+/// several separate areas (MultiPolygon or several features); navigation
+/// works inside the area the user is currently in.
+@immutable
 class Park {
-  const Park({
+  Park({
     required this.id,
     required this.name,
-    required this.boundary,
-  });
+    required this.areas,
+    required this.sourceFile,
+  }) : bounds = areas
+            .map((a) => a.bounds)
+            .reduce((value, element) => value.union(element));
 
   final String id;
   final String name;
-  final List<LatLng> boundary; // Polygon coordinates
+  final List<ParkArea> areas;
+  final String sourceFile;
+  final GeoBounds bounds;
 
-  /// Check if a point is inside the park boundary using ray casting algorithm
-  bool containsPoint(double lat, double lng) {
-    int intersections = 0;
-    for (int i = 0; i < boundary.length - 1; i++) {
-      final p1 = boundary[i];
-      final p2 = boundary[i + 1];
-
-      if (_rayIntersectsSegment(lat, lng, p1, p2)) {
-        intersections++;
-      }
+  /// Index of the area containing the point, or null when outside the park.
+  int? areaIndexAt(double lat, double lng) {
+    if (!bounds.contains(lat, lng)) return null;
+    for (var i = 0; i < areas.length; i++) {
+      if (areas[i].contains(lat, lng)) return i;
     }
-    return intersections % 2 == 1;
+    return null;
   }
 
-  bool _rayIntersectsSegment(double lat, double lng, LatLng p1, LatLng p2) {
-    if (p1.latitude > p2.latitude) {
-      return _rayIntersectsSegment(lat, lng, p2, p1);
-    }
+  bool containsPoint(double lat, double lng) => areaIndexAt(lat, lng) != null;
 
-    if (lat < p1.latitude || lat > p2.latitude) {
-      return false;
-    }
-
-    if (lng >= p1.longitude && lng >= p2.longitude) {
-      return false;
-    }
-
-    if (lng < p1.longitude && lng < p2.longitude) {
-      return true;
-    }
-
-    final slope = (p2.longitude - p1.longitude) / (p2.latitude - p1.latitude);
-    final x = p1.longitude + (lat - p1.latitude) * slope;
-    return lng < x;
-  }
-
-  /// Get center point of the park (average of all boundary points)
-  LatLng get center {
-    double sumLat = 0;
-    double sumLng = 0;
-    for (final point in boundary) {
-      sumLat += point.latitude;
-      sumLng += point.longitude;
-    }
-    return LatLng(
-      sumLat / boundary.length,
-      sumLng / boundary.length,
-    );
-  }
-
-  /// Get bounds for fitting the park on the map
-  ({LatLng southwest, LatLng northeast}) get bounds {
-    double minLat = boundary.first.latitude;
-    double maxLat = boundary.first.latitude;
-    double minLng = boundary.first.longitude;
-    double maxLng = boundary.first.longitude;
-
-    for (final point in boundary) {
-      if (point.latitude < minLat) minLat = point.latitude;
-      if (point.latitude > maxLat) maxLat = point.latitude;
-      if (point.longitude < minLng) minLng = point.longitude;
-      if (point.longitude > maxLng) maxLng = point.longitude;
-    }
-
-    return (
-      southwest: LatLng(minLat, minLng),
-      northeast: LatLng(maxLat, maxLng),
-    );
-  }
+  /// Human readable label for an area ("area 2 of 3"), empty for single-area parks.
+  String areaLabel(int index) =>
+      areas.length > 1 ? 'area ${index + 1} of ${areas.length}' : '';
 }

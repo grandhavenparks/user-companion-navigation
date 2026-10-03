@@ -1,19 +1,19 @@
-import 'package:sqflite/sqflite.dart';
 import 'package:path/path.dart';
+import 'package:sqflite/sqflite.dart';
 
 import '../config/app_config.dart';
 import '../models/dataset.dart';
 import '../models/tree.dart';
-import '../models/visit_record.dart';
 
-/// SQLite database for trees, datasets, and visits.
+/// SQLite database for datasets, points and visit state.
 class DatabaseService {
   Database? _db;
+  Future<Database>? _opening;
 
   Future<Database> get database async {
-    if (_db != null) return _db!;
-    _db = await _init();
-    return _db!;
+    final db = _db;
+    if (db != null) return db;
+    return _db = await (_opening ??= _init());
   }
 
   Future<Database> _init() async {
@@ -26,10 +26,9 @@ class DatabaseService {
       onUpgrade: _onUpgrade,
     );
   }
-  
+
   Future<void> _onUpgrade(Database db, int oldVersion, int newVersion) async {
     if (oldVersion < 2) {
-      // Add visit_notes column to trees table
       await db.execute('ALTER TABLE trees ADD COLUMN visit_notes TEXT');
     }
   }
@@ -63,6 +62,8 @@ class DatabaseService {
         FOREIGN KEY (dataset_id) REFERENCES datasets (id)
       )
     ''');
+    // Kept for databases created by older versions; cleared together with
+    // the visited flags.
     await db.execute('''
       CREATE TABLE visit_records (
         id TEXT PRIMARY KEY,
@@ -73,34 +74,32 @@ class DatabaseService {
         FOREIGN KEY (tree_id) REFERENCES trees (id)
       )
     ''');
+    await db.execute('CREATE INDEX idx_trees_dataset ON trees(dataset_id)');
+    await db.execute('CREATE INDEX idx_trees_visited ON trees(visited)');
     await db.execute(
-      'CREATE INDEX idx_trees_dataset ON trees(dataset_id)',
-    );
-    await db.execute(
-      'CREATE INDEX idx_trees_visited ON trees(visited)',
-    );
-    await db.execute(
-      'CREATE INDEX idx_visit_records_tree ON visit_records(tree_id)',
-    );
+        'CREATE INDEX idx_visit_records_tree ON visit_records(tree_id)');
   }
 
-  // Datasets
-  Future<void> insertDataset(Dataset dataset) async {
+  // --- Datasets ------------------------------------------------------------
+
+  /// Saves a dataset and all of its points in one transaction, so a failed
+  /// import never leaves a half-imported dataset behind.
+  Future<void> insertDatasetWithTrees(Dataset dataset, List<Tree> trees) async {
     final db = await database;
-    await db.insert('datasets', dataset.toMap());
+    await db.transaction((txn) async {
+      await txn.insert('datasets', dataset.toMap());
+      final batch = txn.batch();
+      for (final t in trees) {
+        batch.insert('trees', t.toMap());
+      }
+      await batch.commit(noResult: true);
+    });
   }
 
   Future<List<Dataset>> getAllDatasets() async {
     final db = await database;
     final maps = await db.query('datasets', orderBy: 'imported_at DESC');
-    return maps.map((m) => Dataset.fromMap(m)).toList();
-  }
-
-  Future<Dataset?> getDatasetById(String id) async {
-    final db = await database;
-    final maps = await db.query('datasets', where: 'id = ?', whereArgs: [id]);
-    if (maps.isEmpty) return null;
-    return Dataset.fromMap(maps.first);
+    return maps.map(Dataset.fromMap).toList();
   }
 
   Future<void> updateDatasetEnabled(String id, bool enabled) async {
@@ -115,30 +114,18 @@ class DatabaseService {
 
   Future<void> deleteDataset(String id) async {
     final db = await database;
-    await db.delete('trees', where: 'dataset_id = ?', whereArgs: [id]);
-    await db.delete('datasets', where: 'id = ?', whereArgs: [id]);
+    await db.transaction((txn) async {
+      await txn.rawDelete(
+        'DELETE FROM visit_records WHERE tree_id IN '
+        '(SELECT id FROM trees WHERE dataset_id = ?)',
+        [id],
+      );
+      await txn.delete('trees', where: 'dataset_id = ?', whereArgs: [id]);
+      await txn.delete('datasets', where: 'id = ?', whereArgs: [id]);
+    });
   }
 
-  // Trees
-  Future<void> insertTrees(List<Tree> trees) async {
-    if (trees.isEmpty) return;
-    final db = await database;
-    final batch = db.batch();
-    for (final t in trees) {
-      batch.insert('trees', t.toMap());
-    }
-    await batch.commit(noResult: true);
-  }
-
-  Future<List<Tree>> getTreesByDatasetId(String datasetId) async {
-    final db = await database;
-    final maps = await db.query(
-      'trees',
-      where: 'dataset_id = ?',
-      whereArgs: [datasetId],
-    );
-    return maps.map((m) => Tree.fromMap(m)).toList();
-  }
+  // --- Points --------------------------------------------------------------
 
   Future<List<Tree>> getTreesFromEnabledDatasets() async {
     final db = await database;
@@ -147,7 +134,7 @@ class DatabaseService {
       INNER JOIN datasets d ON t.dataset_id = d.id
       WHERE d.enabled = 1
     ''');
-    return maps.map((m) => Tree.fromMap(m)).toList();
+    return maps.map(Tree.fromMap).toList();
   }
 
   Future<Tree?> getTreeById(String id) async {
@@ -159,22 +146,19 @@ class DatabaseService {
 
   Future<void> updateTreeVisited(String treeId, bool visited) async {
     final db = await database;
-    final values = <String, Object?>{
-      'visited': visited ? 1 : 0,
-      'visited_at': visited ? DateTime.now().toIso8601String() : null,
-    };
-    if (!visited) {
-      values['visit_notes'] = null;
-    }
     await db.update(
       'trees',
-      values,
+      {
+        'visited': visited ? 1 : 0,
+        'visited_at': visited ? DateTime.now().toIso8601String() : null,
+        if (!visited) 'visit_notes': null,
+      },
       where: 'id = ?',
       whereArgs: [treeId],
     );
   }
 
-  /// All trees marked visited (any dataset).
+  /// All points marked visited (any dataset), newest first.
   Future<List<Tree>> getVisitedTrees() async {
     final db = await database;
     final maps = await db.query(
@@ -183,54 +167,25 @@ class DatabaseService {
       whereArgs: [1],
       orderBy: 'visited_at DESC',
     );
-    return maps.map((m) => Tree.fromMap(m)).toList();
+    return maps.map(Tree.fromMap).toList();
   }
 
-  /// Reset visited flags and remove visit log rows (after export / user reset).
+  /// Reset visited flags and remove legacy visit log rows.
   Future<void> clearAllVisitedState() async {
     final db = await database;
-    await db.delete('visit_records');
-    await db.rawUpdate('''
-      UPDATE trees SET visited = 0, visited_at = NULL, visit_notes = NULL
-      WHERE visited = 1
-    ''');
-  }
-  
-  Future<void> updateTreeWithNotes(String treeId, String notes) async {
-    final db = await database;
-    await db.update(
-      'trees',
-      {
-        'visited': 1,
-        'visited_at': DateTime.now().toIso8601String(),
-        'visit_notes': notes,
-      },
-      where: 'id = ?',
-      whereArgs: [treeId],
-    );
-  }
-
-  // Visit records
-  Future<void> insertVisitRecord(VisitRecord record) async {
-    final db = await database;
-    await db.insert('visit_records', record.toMap());
-  }
-
-  Future<List<VisitRecord>> getVisitRecordsByTreeId(String treeId) async {
-    final db = await database;
-    final maps = await db.query(
-      'visit_records',
-      where: 'tree_id = ?',
-      whereArgs: [treeId],
-      orderBy: 'visited_at DESC',
-    );
-    return maps.map((m) => VisitRecord.fromMap(m)).toList();
+    await db.transaction((txn) async {
+      await txn.delete('visit_records');
+      await txn.rawUpdate('''
+        UPDATE trees SET visited = 0, visited_at = NULL, visit_notes = NULL
+        WHERE visited = 1
+      ''');
+    });
   }
 
   Future<void> close() async {
-    if (_db != null) {
-      await _db!.close();
-      _db = null;
-    }
+    final db = _db;
+    _db = null;
+    _opening = null;
+    await db?.close();
   }
 }
