@@ -1,7 +1,9 @@
 # User Navigation Companion
 
-Android app id: `com.user_navigation_companion` (Flutter project folder and Dart
-package are still named `edge_forestry_mobile`).
+Package name `com.user_navigation_companion` (Android application id and
+namespace), Dart package `user_navigation_companion`, database
+`user_navigation_companion.db`. iOS bundle identifiers cannot contain `_`, so
+iOS uses `com.user-navigation-companion`.
 
 Offline-first Flutter app for walking to flagged trees (for example oak wilt
 detections) inside park boundaries. The map, park boundaries and navigation
@@ -15,6 +17,18 @@ work with no network at all; everything is bundled in the APK.
   WKT `POINT(lon lat)`), as are comma/semicolon/tab files, decimal commas,
   degrees-minutes-seconds and N/S/E/W letters. `filename`, `classification`
   and `confidence` columns are kept. An import report lists skipped rows.
+- **Runs**: every imported CSV is a *run*. One run is active at a time (tap
+  it on Home); the map and navigation only use that run, so runs of the same
+  place are never mixed. A new import becomes the active run.
+- **Clusters**: the map's bubble button switches between point view and
+  cluster view instantly. In cluster view the menu (⋮) can **Create
+  clusters** (100 m grid, same as the old app: points in one cell merge at
+  their average position, labelled with the most common classification, no
+  confidence) or **Import cluster CSV** (only possible there). A cluster set
+  works like its own import: it belongs to the run, starts unvisited, has
+  its own visited marks, and is navigated exactly like points (arrival radius
+  25 m instead of 10 m). Re-creating replaces it with fresh, unvisited
+  clusters. Clusters never split when zooming. The chosen view is remembered.
 - **Offline map**: Protomaps (OpenStreetMap) vector tiles, sharp up to zoom 24.
 - **Parks**: every `parks/*.geojson` is loaded automatically. A file may hold
   several polygons (MultiPolygon, several features, holes).
@@ -31,8 +45,20 @@ work with no network at all; everything is bundled in the APK.
   the map follows you (pan to stop following, tap the location button to
   resume). The screen stays on while navigating. GPS stops when the screen
   is off and the route is recomputed from a fresh fix when it comes back.
-- **Export visited points** as CSV (filename, coordinates, time, dataset,
-  classification, confidence) via the share sheet.
+- **Save to device**: Export visited (Home) and the cluster menu's **Save
+  clusters to device (CSV)** open Android's save dialog (choose a folder,
+  tap Save). A saved cluster file can be imported again in cluster view.
+- **Choosing a park**: the park list is empty every time the map opens; you
+  pick the park. Each entry shows how many points (or clusters) of the
+  active run it holds, and if GPS says you are inside a park the empty map
+  offers a "You are in … - open it" button. Picking a park without any of
+  the run's points tells you which parks have them. The bar under the park
+  list shows the run and how many of its points are in the shown park.
+- **Export visited** (active run): one CSV with visited points and visited
+  clusters (`type` column = point/cluster; clusters list their trees, no
+  confidence). Point rows can be imported again on Home, cluster rows on the
+  map in cluster view. **Clear visited** clears the view last used on the
+  map (points or clusters) of the active run.
 
 ## Requirements (development Mac)
 
@@ -45,7 +71,7 @@ work with no network at all; everything is bundled in the APK.
 ## Build and install
 
 ```bash
-cd edge_forestry_mobile
+cd ef-mobile   # your project folder
 
 # 1. Offline map for every park in parks/ (needs internet, a few minutes)
 source .venv/bin/activate          # venv holding the pmtiles Python package

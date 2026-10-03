@@ -1,5 +1,58 @@
 # Changes
 
+## 1.3.2
+
+- The park list is empty every time the map opens (after the safety
+  reminder); nothing is selected automatically any more, neither by GPS nor
+  by where the run's points are. This replaces the 1.3.1 "map follows the
+  active run" switching.
+- Park list entries show the active run's points (or clusters) per park,
+  e.g. "Apple Ridge · 12 points". If GPS says you are inside a park, the
+  empty map offers "You are in … - open it". Picking a park without any of
+  the run's points says which parks have them.
+- `.gitignore`: `all_files.txt` (code dump, not part of the app).
+- Removed `tools/remove_obsolete_files.sh` (one-time 1.1/1.2 cleanup, done).
+
+## 1.3.1
+
+- **Save to device**: cluster menu > "Save clusters to device (CSV)" and
+  Home > Export visited > "Save to device" open Android's save dialog
+  (Save button). Saved cluster files import again in cluster view.
+- **Map follows the active run** (replaced in 1.3.2): after switching or
+  importing a run, the map opened the park that holds its points. The run bar
+  shows how many of the run's points are in the shown park. Cluster view
+  without clusters now shows a banner (with a "Point view" button) instead
+  of an empty map.
+- **Package name everywhere**: Dart package `user_navigation_companion`,
+  screen channel `user_navigation_companion/screen`, database
+  `user_navigation_companion.db` (old `edge_forestry.db` renamed on first
+  start), map build script strings. iOS bundle id
+  `com.user-navigation-companion` (no `_` allowed on iOS).
+
+## 1.3.0
+
+- **Runs**: one imported CSV (run) is active at a time, chosen on Home
+  (replaces the on/off switches). Map, navigation, export and clear only use
+  the active run; runs of the same place are never shown together. A new
+  import becomes active; after updating, the newest run is active.
+- **Clusters** (`lib/services/cluster_service.dart`): the old app's 100 m
+  grid, average position, most common classification, no confidence.
+  Created on the map in cluster view (menu > Create clusters) or imported
+  from a cluster CSV there (only there). Stored like an import (its own
+  dataset linked to the run), always created unvisited, with their own
+  visited marks; re-creating replaces them. Clusters never split on zoom
+  and are split by park area; a cluster just outside the boundary still
+  belongs to its trees' area.
+- **Navigation** is identical for points and clusters; switching views is
+  instant and each view keeps its own target. Arrival radius: points 10 m,
+  clusters 25 m (Settings). The chosen view is remembered.
+- Cluster markers show the number of trees (size grows with it); the
+  details screen lists the cluster's trees.
+- Export visited: points and clusters of the active run in one file with a
+  `type` column. Clear visited: the view last used on the map.
+- Database schema 3 (automatic upgrade).
+- New tests: `test/cluster_service_test.dart`, cluster-file parser tests.
+
 ## 1.2.0
 
 - App name **User Navigation Companion**; Android application id and

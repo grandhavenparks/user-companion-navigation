@@ -13,13 +13,13 @@ Future<void> main() async {
   runApp(
     ProviderScope(
       overrides: [sharedPreferencesProvider.overrideWithValue(prefs)],
-      child: const EdgeForestryApp(),
+      child: const UserNavigationCompanionApp(),
     ),
   );
 }
 
-class EdgeForestryApp extends StatelessWidget {
-  const EdgeForestryApp({super.key});
+class UserNavigationCompanionApp extends StatelessWidget {
+  const UserNavigationCompanionApp({super.key});
 
   @override
   Widget build(BuildContext context) {

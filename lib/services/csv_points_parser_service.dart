@@ -4,6 +4,7 @@ import 'package:uuid/uuid.dart';
 
 import '../models/dataset.dart';
 import '../models/tree.dart';
+import 'cluster_service.dart' show clusterName;
 
 // ---------------------------------------------------------------------------
 // Header aliases. Headers are compared in "compact" form: lower case, units in
@@ -47,13 +48,27 @@ const List<String> _confidenceAliases = [
 ];
 
 const List<String> _classificationAliases = [
-  'classification', 'class', 'predictedclass', 'prediction',
+  'classification', 'dominantclassification', 'class', 'predictedclass', 'prediction',
   'predictedlabel', 'label', 'result', 'status', 'category', 'diagnosis',
   'disease',
 ];
 
 const List<String> _descriptionAliases = [
   'description', 'notes', 'note', 'comment', 'comments', 'remarks', 'remark',
+];
+
+/// Row type in files exported by the app: `point` or `cluster`.
+const List<String> _typeAliases = ['type', 'rowtype', 'pointtype', 'recordtype', 'kind'];
+
+/// Cluster files: number of merged points.
+const List<String> _countAliases = [
+  'count', 'membercount', 'memberscount', 'treecount', 'trees', 'numtrees',
+  'pointcount', 'numpoints',
+];
+
+/// Cluster files: names of the merged points, separated by ; | or new lines.
+const List<String> _membersAliases = [
+  'members', 'membernames', 'memberfilenames', 'memberfiles', 'filenames',
 ];
 
 const Set<String> _latitudeTokens = {'lat', 'latitude'};
@@ -68,11 +83,22 @@ class CsvImportReport {
   CsvImportReport({
     required this.delimiter,
     required this.coordinateColumns,
+    this.clusters = false,
     this.nameColumn,
     this.classificationColumn,
     this.confidenceColumn,
     this.descriptionColumn,
+    this.countColumn,
+    this.membersColumn,
   });
+
+  /// The file was imported as clusters (cluster view).
+  final bool clusters;
+  final String? countColumn;
+  final String? membersColumn;
+
+  /// Rows of the other type (`type` column) that were left out.
+  int otherTypeRows = 0;
 
   final String delimiter;
 
@@ -105,8 +131,9 @@ class CsvImportReport {
 
   /// Short human readable lines for a dialog.
   List<String> summaryLines() {
+    final noun = clusters ? 'clusters' : 'rows';
     final lines = <String>[
-      'Imported $imported of $dataRows rows ($delimiterLabel separated).',
+      'Imported $imported of $dataRows $noun ($delimiterLabel separated).',
       'Coordinates: $coordinateColumns.',
     ];
     final extra = <String>[
@@ -114,8 +141,16 @@ class CsvImportReport {
       if (classificationColumn != null) 'classification: $classificationColumn',
       if (confidenceColumn != null) 'confidence: $confidenceColumn',
       if (descriptionColumn != null) 'notes: $descriptionColumn',
+      if (countColumn != null) 'count: $countColumn',
+      if (membersColumn != null) 'members: $membersColumn',
     ];
     if (extra.isNotEmpty) lines.add('Also read ${extra.join(', ')}.');
+    if (otherTypeRows > 0) {
+      lines.add(clusters
+          ? 'Left out $otherTypeRows point row(s); import points on Home.'
+          : 'Left out $otherTypeRows cluster row(s); import those on the map '
+              'in cluster view.');
+    }
     if (swapped > 0) {
       lines.add('Swapped latitude/longitude in $swapped row(s).');
     }
@@ -151,10 +186,16 @@ class CsvPointsParseResult {
 // ---------------------------------------------------------------------------
 
 /// Parses raw file bytes (UTF-8 with or without BOM, falls back to Latin-1).
+///
+/// With [clusters] the file is read as a cluster file (cluster view only):
+/// count/members columns are read, confidence is ignored and the dataset
+/// becomes the cluster set of [parentRunId].
 CsvPointsParseResult parsePointsCsvBytes(
   List<int> bytes, {
   required String sourceName,
   DateTime? importedAt,
+  bool clusters = false,
+  String? parentRunId,
 }) {
   String text;
   try {
@@ -162,7 +203,13 @@ CsvPointsParseResult parsePointsCsvBytes(
   } on FormatException {
     text = latin1.decode(bytes, allowInvalid: true);
   }
-  return parsePointsCsv(text, sourceName: sourceName, importedAt: importedAt);
+  return parsePointsCsv(
+    text,
+    sourceName: sourceName,
+    importedAt: importedAt,
+    clusters: clusters,
+    parentRunId: parentRunId,
+  );
 }
 
 /// Parses CSV/TSV text into a [Dataset] and its points.
@@ -170,6 +217,8 @@ CsvPointsParseResult parsePointsCsv(
   String content, {
   required String sourceName,
   DateTime? importedAt,
+  bool clusters = false,
+  String? parentRunId,
 }) {
   var text = content;
   if (text.startsWith('\uFEFF')) text = text.substring(1);
@@ -248,13 +297,44 @@ CsvPointsParseResult parsePointsCsv(
     );
   }
 
+  var typeIndex = find(_typeAliases);
+  if (typeIndex != null && !_isRowTypeColumn(data, typeIndex)) {
+    // A column called e.g. "type" or "kind" holding something else.
+    taken.remove(typeIndex);
+    typeIndex = null;
+  }
+  final countIndex = find(_countAliases);
+  final membersIndex = find(_membersAliases);
+
+  // Cluster files may only be imported in cluster view, and cluster view only
+  // takes cluster files.
+  final hasClusterColumns = countIndex != null &&
+      (membersIndex != null || compact.contains('dominantclassification'));
+  if (!clusters && typeIndex == null && hasClusterColumns) {
+    return const CsvPointsParseResult(
+      error: 'This looks like a cluster file. Import it on the map in cluster '
+          'view (cluster menu > Import cluster CSV).',
+    );
+  }
+  if (clusters && typeIndex == null && countIndex == null && membersIndex == null) {
+    return const CsvPointsParseResult(
+      error: 'This looks like a points file (no count, members or type '
+          'column). Import points on Home, or use "Create clusters" on the map.',
+    );
+  }
+
   final nameIndex = find(_nameAliases);
-  final confidenceIndex = find(_confidenceAliases);
+  // Clusters never carry a confidence score.
+  final confidenceIndex = clusters ? null : find(_confidenceAliases);
   final classificationIndex = find(_classificationAliases);
   final descriptionIndex = find(_descriptionAliases);
+  final wantedType = clusters ? 'cluster' : 'point';
 
   final report = CsvImportReport(
     delimiter: delimiter,
+    clusters: clusters,
+    countColumn: clusters && countIndex != null ? header[countIndex] : null,
+    membersColumn: clusters && membersIndex != null ? header[membersIndex] : null,
     coordinateColumns: combinedIndex != null
         ? '${header[combinedIndex]} (combined)'
         : '${header[latIndex!]} / ${header[lonIndex!]}',
@@ -272,6 +352,13 @@ CsvPointsParseResult parsePointsCsv(
   for (var r = 0; r < data.length; r++) {
     final row = data[r];
     final rowNumber = dataRowNumbers[r];
+    if (typeIndex != null) {
+      final type = _cell(row, typeIndex).trim().toLowerCase();
+      if (type.isNotEmpty && type != wantedType) {
+        report.otherTypeRows++;
+        continue;
+      }
+    }
     report.dataRows++;
 
     double? lat;
@@ -330,16 +417,39 @@ CsvPointsParseResult parsePointsCsv(
     final confidence =
         confidenceIndex == null ? null : parseConfidence(_cell(row, confidenceIndex));
 
-    trees.add(Tree(
-      id: uuid.v4(),
-      datasetId: datasetId,
-      filename: name.isNotEmpty ? name : 'Point ${trees.length + 1}',
-      latitude: lat,
-      longitude: lon,
-      classification: classification.isEmpty ? null : classification,
-      description: description.isEmpty ? null : description,
-      predictionScore: confidence,
-    ));
+    if (clusters) {
+      final members = membersIndex == null
+          ? const <String>[]
+          : _cell(row, membersIndex)
+              .split(RegExp(r'[;|\n]'))
+              .map((m) => m.trim())
+              .where((m) => m.isNotEmpty)
+              .toList();
+      final count = (countIndex == null ? null : parseCount(_cell(row, countIndex))) ??
+          members.length;
+      trees.add(Tree(
+        id: uuid.v4(),
+        datasetId: datasetId,
+        filename: name.isNotEmpty ? name : clusterName(trees.length + 1, count),
+        latitude: lat,
+        longitude: lon,
+        classification: classification.isEmpty ? null : classification,
+        description: description.isEmpty ? null : description,
+        memberCount: count,
+        members: members,
+      ));
+    } else {
+      trees.add(Tree(
+        id: uuid.v4(),
+        datasetId: datasetId,
+        filename: name.isNotEmpty ? name : 'Point ${trees.length + 1}',
+        latitude: lat,
+        longitude: lon,
+        classification: classification.isEmpty ? null : classification,
+        description: description.isEmpty ? null : description,
+        predictionScore: confidence,
+      ));
+    }
     report.imported++;
   }
 
@@ -353,17 +463,31 @@ CsvPointsParseResult parsePointsCsv(
   }
 
   if (trees.isEmpty) {
+    if (report.dataRows == 0 && report.otherTypeRows > 0) {
+      return CsvPointsParseResult(
+        report: report,
+        error: clusters
+            ? 'This file has only point rows. Import it on Home, or use '
+                '"Create clusters" on the map.'
+            : 'This file has only cluster rows. Import it on the map in '
+                'cluster view (cluster menu > Import cluster CSV).',
+      );
+    }
     return CsvPointsParseResult(
       report: report,
-      error: 'No valid points found. ${report.summaryLines().skip(1).join(' ')}',
+      error: 'No valid ${clusters ? 'clusters' : 'points'} found. '
+          '${report.summaryLines().skip(1).join(' ')}',
     );
   }
 
+  final baseName = datasetNameFromFile(sourceName);
   final dataset = Dataset(
     id: datasetId,
-    name: datasetNameFromFile(sourceName),
+    name: clusters ? '$baseName · clusters' : baseName,
     treeCount: trees.length,
     importedAt: importedAt ?? DateTime.now(),
+    kind: clusters ? DatasetKind.clusters : DatasetKind.points,
+    parentId: clusters ? parentRunId : null,
   );
   return CsvPointsParseResult(dataset: dataset, trees: trees, report: report);
 }
@@ -486,6 +610,18 @@ List<String> headerTokens(String header) => header
     .toList();
 
 String _cell(List<String> row, int index) => index < row.length ? row[index] : '';
+
+/// True when every non-empty value is `point` or `cluster` (app export).
+bool _isRowTypeColumn(List<List<String>> rows, int index) {
+  var any = false;
+  for (final row in rows) {
+    final v = _cell(row, index).trim().toLowerCase();
+    if (v.isEmpty) continue;
+    if (v != 'point' && v != 'cluster') return false;
+    any = true;
+  }
+  return any;
+}
 
 bool _isLatitude(double v) => v >= -90 && v <= 90;
 bool _isLongitude(double v) => v >= -180 && v <= 180;
@@ -616,6 +752,14 @@ double? parseConfidence(String raw) {
   if (RegExp(r'^[+-]?\d+,\d+$').hasMatch(s)) s = s.replaceFirst(',', '.');
   final v = double.tryParse(s);
   return (v == null || !v.isFinite) ? null : v;
+}
+
+/// "5", "5.0" -> 5; null when unreadable.
+int? parseCount(String raw) {
+  final s = raw.trim();
+  if (s.isEmpty) return null;
+  final v = int.tryParse(s) ?? double.tryParse(s)?.round();
+  return (v == null || v < 0) ? null : v;
 }
 
 /// "oak_wilt_results_20261002.csv" -> "oak_wilt_results_20261002".

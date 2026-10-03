@@ -8,7 +8,7 @@ class ScreenWake {
 
   static final ScreenWake instance = ScreenWake._();
 
-  static const MethodChannel _channel = MethodChannel('edge_forestry/screen');
+  static const MethodChannel _channel = MethodChannel('user_navigation_companion/screen');
 
   bool _keepOn = false;
 

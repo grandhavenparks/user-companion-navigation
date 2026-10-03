@@ -21,6 +21,17 @@
   `classification`, `confidence`/`score`, `description`/`notes`.
 - Import runs in a background isolate and is saved in one transaction.
 
+## Runs and cluster files
+
+- Each CSV imported on Home is a run; only the active run is shown and
+  navigated. Files exported by the app have a `type` column: Home imports
+  only `point` rows; the map's cluster view imports only `cluster` rows.
+- Cluster files are refused on Home and points files are refused in cluster
+  view. Accepted cluster files: the app's visited export and the old app's
+  `aggregated_points_*.csv` (`count`, coordinates, `dominant_classification`;
+  confidence ignored). Columns: `count`/`member_count`, `members` (names
+  separated by `;` or `|`), classification, name/filename.
+
 ## Park boundaries (`parks/*.geojson`)
 
 - Discovered through the Flutter asset manifest: no list in code.
@@ -42,12 +53,14 @@
 
 ## SQLite (`DatabaseService`)
 
-- `datasets`, `trees` (points: name, coordinates, classification,
-  confidence, visited, visited_at, visit_notes) and the legacy
-  `visit_records` table (cleared with the visited flags).
+- Schema version 3. `datasets` (`kind` = points | clusters, `parent_id` =
+  run of a cluster set), `trees` (points and clusters: name, coordinates,
+  classification, confidence, visited, visited_at, visit_notes,
+  member_count, members, park_id, area_index) and the legacy
+  `visit_records` table. Upgrading from version 2 adds the new columns.
 
 ## Visited export
 
-- `filename,latitude,longitude,visited_at,dataset,classification,confidence,notes`
-  shared via the system share sheet; optional clear afterwards. The file can be
-  imported again.
+- Active run only:
+  `type,filename,latitude,longitude,visited_at,run,classification,confidence,count,members,notes`
+  shared via the system share sheet; optional clear afterwards.

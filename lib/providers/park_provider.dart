@@ -4,7 +4,9 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../models/park.dart';
 import '../models/tree.dart';
 import '../services/park_service.dart';
-import 'trees_provider.dart';
+import 'run_provider.dart';
+
+export '../models/park.dart' show ParkMembership, findParkMembership;
 
 /// All parks bundled under `parks/` (plus files that failed to load).
 final parksProvider = FutureProvider<ParkLoadResult>((ref) {
@@ -24,7 +26,8 @@ final selectedParkProvider = Provider<Park?>((ref) {
   return null;
 });
 
-/// Enabled points split by the selected park's areas.
+/// The visible points (active run's points or clusters) split by the
+/// selected park's areas.
 @immutable
 class ParkTrees {
   const ParkTrees({
@@ -35,10 +38,10 @@ class ParkTrees {
 
   final Park? park;
 
-  /// Every point from enabled datasets (inside and outside the park).
+  /// Every visible point (inside and outside the park).
   final List<Tree> all;
 
-  /// Point id -> index of the park area containing it. Points outside the
+  /// Point id -> index of the park area it belongs to. Points outside the
   /// park are not in this map.
   final Map<String, int> areaOf;
 
@@ -51,30 +54,54 @@ class ParkTrees {
   int get outsideCount => all.length - areaOf.length;
 }
 
-final parkTreesProvider = Provider.autoDispose<ParkTrees>((ref) {
-  final park = ref.watch(selectedParkProvider);
-  final trees = ref.watch(enabledTreesProvider).valueOrNull ?? const <Tree>[];
+/// Area of [park] that [tree] belongs to: where it lies, or for a cluster
+/// whose average position fell just outside, the area of its members.
+int? areaOfPoint(Park park, Tree tree) {
+  final area = park.areaIndexAt(tree.latitude, tree.longitude);
+  if (area != null) return area;
+  final stored = tree.areaIndex;
+  if (tree.parkId == park.id && stored != null && stored < park.areas.length) {
+    return stored;
+  }
+  return null;
+}
+
+ParkTrees buildParkTrees(Park? park, List<Tree> points) {
   final areaOf = <String, int>{};
   if (park != null) {
-    for (final tree in trees) {
-      final area = park.areaIndexAt(tree.latitude, tree.longitude);
+    for (final tree in points) {
+      final area = areaOfPoint(park, tree);
       if (area != null) areaOf[tree.id] = area;
     }
   }
-  return ParkTrees(park: park, all: trees, areaOf: areaOf);
-});
-
-/// Which park (and area) a point belongs to, if any.
-class ParkMembership {
-  const ParkMembership(this.park, this.areaIndex);
-
-  final Park park;
-  final int areaIndex;
+  return ParkTrees(park: park, all: points, areaOf: areaOf);
 }
 
-ParkMembership? findParkMembership(List<Park> parks, double lat, double lng) {
+final parkTreesProvider = Provider.autoDispose<ParkTrees>((ref) {
+  final park = ref.watch(selectedParkProvider);
+  final points = ref.watch(visiblePointsProvider);
+  return buildParkTrees(park, points);
+});
+
+/// Number of visible points (the active run's points, or its clusters in
+/// cluster view) per park id. Shown in the park list.
+final visibleParkCountsProvider = Provider<Map<String, int>>((ref) {
+  final parks = ref.watch(parksProvider).valueOrNull?.parks ?? const <Park>[];
+  final points = ref.watch(visiblePointsProvider);
+  final counts = <String, int>{};
+  for (final t in points) {
+    final m = membershipOf(parks, t);
+    if (m != null) counts[m.park.id] = (counts[m.park.id] ?? 0) + 1;
+  }
+  return counts;
+});
+
+/// Park/area a point belongs to (by position, or a cluster's stored area).
+ParkMembership? membershipOf(List<Park> parks, Tree tree) {
+  final byPosition = findParkMembership(parks, tree.latitude, tree.longitude);
+  if (byPosition != null) return byPosition;
   for (final park in parks) {
-    final area = park.areaIndexAt(lat, lng);
+    final area = areaOfPoint(park, tree);
     if (area != null) return ParkMembership(park, area);
   }
   return null;

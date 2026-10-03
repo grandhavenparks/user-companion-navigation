@@ -4,13 +4,16 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../config/app_config.dart';
 import '../models/dataset.dart';
+import '../models/tree.dart';
 import '../providers/basemap_provider.dart';
 import '../providers/dataset_provider.dart';
 import '../providers/dataset_repository_provider.dart';
 import '../providers/park_provider.dart';
+import '../providers/run_provider.dart';
+import '../providers/settings_provider.dart';
 import '../providers/tree_repository_provider.dart';
-import '../providers/trees_provider.dart';
 import '../services/csv_points_parser_service.dart';
+import '../services/database_service.dart';
 import '../services/file_import_service.dart';
 import '../services/visited_points_export_service.dart';
 import 'park_map_screen.dart';
@@ -26,6 +29,8 @@ class HomeScreen extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final datasetsAsync = ref.watch(datasetsProvider);
+    final stats = ref.watch(datasetStatsProvider).valueOrNull ?? const {};
+    final activeRun = ref.watch(activeRunProvider);
     // Watching also prepares the offline map in the background at start-up.
     // Only a problem is shown here; a working map needs no message.
     final basemapAsync = ref.watch(basemapProvider);
@@ -51,8 +56,7 @@ class HomeScreen extends ConsumerWidget {
       ),
       body: RefreshIndicator(
         onRefresh: () async {
-          ref.invalidate(datasetsProvider);
-          ref.invalidate(enabledTreesProvider);
+          refreshDatasets(ref);
           await ref.read(datasetsProvider.future);
         },
         child: ListView(
@@ -78,7 +82,9 @@ class HomeScreen extends ConsumerWidget {
               children: [
                 Expanded(
                   child: OutlinedButton.icon(
-                    onPressed: () => _exportVisited(context, ref),
+                    onPressed: activeRun == null
+                        ? null
+                        : () => _exportVisited(context, ref, activeRun),
                     icon: const Icon(Icons.ios_share),
                     label: const Text('Export visited'),
                   ),
@@ -86,7 +92,9 @@ class HomeScreen extends ConsumerWidget {
                 const SizedBox(width: 8),
                 Expanded(
                   child: OutlinedButton.icon(
-                    onPressed: () => _clearVisitedPrompt(context, ref),
+                    onPressed: activeRun == null
+                        ? null
+                        : () => _clearVisited(context, ref, activeRun),
                     icon: const Icon(Icons.clear_all),
                     label: const Text('Clear visited'),
                   ),
@@ -94,22 +102,34 @@ class HomeScreen extends ConsumerWidget {
               ],
             ),
             const SizedBox(height: 24),
-            Text('Datasets', style: Theme.of(context).textTheme.titleMedium),
+            Text('Runs', style: Theme.of(context).textTheme.titleMedium),
+            Text(
+              'One run (CSV) is used on the map at a time. Tap a run to use it.',
+              style: Theme.of(context).textTheme.bodySmall,
+            ),
             const SizedBox(height: 8),
             ...datasetsAsync.when<List<Widget>>(
               loading: () => [const Center(child: CircularProgressIndicator())],
-              error: (e, _) => [Text('Could not load datasets: $e')],
-              data: (datasets) => datasets.isEmpty
-                  ? [const _EmptyDatasets()]
-                  : [
-                      for (final dataset in datasets)
-                        _DatasetCard(
-                          dataset: dataset,
-                          onToggle: (enabled) =>
-                              _setEnabled(ref, dataset.id, enabled),
-                          onDelete: () => _deleteDataset(context, ref, dataset),
-                        ),
-                    ],
+              error: (e, _) => [Text('Could not load runs: $e')],
+              data: (datasets) {
+                final runs = [for (final d in datasets) if (d.isRun) d];
+                if (runs.isEmpty) return [const _EmptyRuns()];
+                return [
+                  for (final run in runs)
+                    _RunCard(
+                      run: run,
+                      clusterSet: clusterSetOf(datasets, run.id),
+                      stats: stats,
+                      active: run.id == activeRun?.id,
+                      onSelect: () => ref
+                          .read(settingsProvider.notifier)
+                          .setActiveRunId(run.id),
+                      onDeleteRun: () => _deleteRun(context, ref, run),
+                      onDeleteClusters: (set) =>
+                          _deleteClusterSet(context, ref, run, set),
+                    ),
+                ];
+              },
             ),
           ],
         ),
@@ -122,25 +142,21 @@ class HomeScreen extends ConsumerWidget {
     );
   }
 
-  Future<void> _setEnabled(WidgetRef ref, String id, bool enabled) async {
-    await ref.read(datasetRepositoryProvider).setDatasetEnabled(id, enabled);
-    ref.invalidate(datasetsProvider);
-    ref.invalidate(enabledTreesProvider);
-  }
+  // ---------------------------------------------------------------------------
+  // Runs
+  // ---------------------------------------------------------------------------
 
-  Future<void> _deleteDataset(
-    BuildContext context,
-    WidgetRef ref,
-    Dataset dataset,
-  ) async {
+  Future<bool> _confirm(
+    BuildContext context, {
+    required String title,
+    required String message,
+    required String action,
+  }) async {
     final ok = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: const Text('Delete dataset?'),
-        content: Text(
-          'This removes "${dataset.name}" and its ${dataset.treeCount} points, '
-          'including their visited marks.',
-        ),
+        title: Text(title),
+        content: Text(message),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(ctx, false),
@@ -148,17 +164,51 @@ class HomeScreen extends ConsumerWidget {
           ),
           FilledButton(
             onPressed: () => Navigator.pop(ctx, true),
-            child: const Text('Delete'),
+            child: Text(action),
           ),
         ],
       ),
     );
-    if (ok == true) {
-      await ref.read(datasetRepositoryProvider).deleteDataset(dataset.id);
-      ref.invalidate(datasetsProvider);
-      ref.invalidate(enabledTreesProvider);
-    }
+    return ok == true;
   }
+
+  Future<void> _deleteRun(BuildContext context, WidgetRef ref, Dataset run) async {
+    final ok = await _confirm(
+      context,
+      title: 'Delete run?',
+      message: 'This removes "${run.name}" with its ${run.treeCount} points, '
+          'its clusters and all their visited marks.',
+      action: 'Delete',
+    );
+    if (!ok) return;
+    await ref.read(datasetRepositoryProvider).deleteDataset(run.id);
+    if (ref.read(settingsProvider).activeRunId == run.id) {
+      await ref.read(settingsProvider.notifier).setActiveRunId(null);
+    }
+    refreshDatasets(ref);
+  }
+
+  Future<void> _deleteClusterSet(
+    BuildContext context,
+    WidgetRef ref,
+    Dataset run,
+    Dataset clusterSet,
+  ) async {
+    final ok = await _confirm(
+      context,
+      title: 'Delete clusters?',
+      message: 'This removes the ${clusterSet.treeCount} clusters of '
+          '"${run.name}" and their visited marks. The run\'s points stay.',
+      action: 'Delete',
+    );
+    if (!ok) return;
+    await ref.read(datasetRepositoryProvider).deleteDataset(clusterSet.id);
+    refreshDatasets(ref);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Import
+  // ---------------------------------------------------------------------------
 
   Future<void> _importCsv(BuildContext context, WidgetRef ref) async {
     final messenger = ScaffoldMessenger.of(context);
@@ -192,10 +242,14 @@ class HomeScreen extends ConsumerWidget {
       }
       return;
     }
-    ref.invalidate(datasetsProvider);
-    ref.invalidate(enabledTreesProvider);
+    // A newly imported run becomes the one used on the map.
+    await ref.read(settingsProvider.notifier).setActiveRunId(dataset.id);
+    refreshDatasets(ref);
 
-    final lines = [...result.report!.summaryLines()];
+    final lines = [
+      ...result.report!.summaryLines(),
+      'This run is now used on the map.',
+    ];
     try {
       final parks = (await ref.read(parksProvider.future)).parks;
       if (parks.isEmpty) {
@@ -246,86 +300,119 @@ class HomeScreen extends ConsumerWidget {
     );
   }
 
-  Future<void> _exportVisited(BuildContext context, WidgetRef ref) async {
+  // ---------------------------------------------------------------------------
+  // Visited
+  // ---------------------------------------------------------------------------
+
+  /// Exports the active run's visited points and visited clusters in one
+  /// file (`type` column = point / cluster).
+  Future<void> _exportVisited(BuildContext context, WidgetRef ref, Dataset run) async {
     final messenger = ScaffoldMessenger.of(context);
     final repo = ref.read(treeRepositoryProvider);
-    final visited = await repo.getVisitedTrees();
-    if (visited.isEmpty) {
-      messenger.showSnackBar(const SnackBar(content: Text('No visited points yet')));
+    final clusterSet = ref.read(activeClusterSetProvider);
+    final points = await repo.getVisitedTreesByDataset(run.id);
+    final List<Tree> clusters = clusterSet == null
+        ? const []
+        : await repo.getVisitedTreesByDataset(clusterSet.id);
+    if (points.isEmpty && clusters.isEmpty) {
+      messenger.showSnackBar(
+          SnackBar(content: Text('Nothing visited yet in "${run.name}"')));
       return;
     }
-    final datasets = await ref.read(datasetRepositoryProvider).getAllDatasets();
+    if (!context.mounted) return;
+    final choice = await showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Export visited'),
+        content: Text('${points.length} visited point(s) and ${clusters.length} '
+            'visited cluster(s) of "${run.name}".'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, 'share'),
+            child: const Text('Share'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx, 'save'),
+            child: const Text('Save to device'),
+          ),
+        ],
+      ),
+    );
+    if (choice == null) return;
     try {
-      await shareVisitedPointsCsv(
-        visited,
-        datasetNames: {for (final d in datasets) d.id: d.name},
-      );
+      if (choice == 'save') {
+        final saved = await saveCsvToDevice(
+          fileName: visitedFileName(run.name),
+          csv: buildVisitedCsv(runName: run.name, points: points, clusters: clusters),
+          dialogTitle: 'Save visited CSV',
+        );
+        messenger.showSnackBar(
+            SnackBar(content: Text(saved ? 'Saved to device' : 'Save cancelled')));
+        if (!saved) return;
+      } else {
+        await shareVisitedCsv(runName: run.name, points: points, clusters: clusters);
+      }
     } catch (e) {
       messenger.showSnackBar(SnackBar(content: Text('Export failed: $e')));
       return;
     }
     if (!context.mounted) return;
-    final clear = await showDialog<bool>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('Clear visited marks?'),
-        content: Text(
-          'Unmark all ${visited.length} visited point(s) now that they are exported?',
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx, false),
-            child: const Text('Keep'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.pop(ctx, true),
-            child: const Text('Clear'),
-          ),
-        ],
-      ),
+    final clear = await _confirm(
+      context,
+      title: 'Clear visited marks?',
+      message: 'Unmark the ${points.length} visited point(s) and '
+          '${clusters.length} visited cluster(s) of "${run.name}" now that '
+          'they are exported?',
+      action: 'Clear',
     );
-    if (clear == true) {
-      await repo.clearAllVisitedState();
-      ref.invalidate(enabledTreesProvider);
-      messenger.showSnackBar(const SnackBar(content: Text('Visited marks cleared')));
-    }
+    if (!clear) return;
+    await repo.clearVisitedForDataset(run.id);
+    if (clusterSet != null) await repo.clearVisitedForDataset(clusterSet.id);
+    refreshDatasets(
+      ref,
+      changedDatasetIds: [run.id, if (clusterSet != null) clusterSet.id],
+    );
+    messenger.showSnackBar(const SnackBar(content: Text('Visited marks cleared')));
   }
 
-  Future<void> _clearVisitedPrompt(BuildContext context, WidgetRef ref) async {
+  /// Clears visited marks of the view last used on the map: the run's points
+  /// in point view, its clusters in cluster view.
+  Future<void> _clearVisited(BuildContext context, WidgetRef ref, Dataset run) async {
     final messenger = ScaffoldMessenger.of(context);
-    final repo = ref.read(treeRepositoryProvider);
-    final visited = await repo.getVisitedTrees();
-    if (!context.mounted) return;
-    if (visited.isEmpty) {
+    final clusterView = ref.read(clusterViewProvider);
+    final clusterSet = ref.read(activeClusterSetProvider);
+    final target = clusterView ? clusterSet : run;
+    if (target == null) {
       messenger.showSnackBar(
-          const SnackBar(content: Text('No visited points to clear')));
+          const SnackBar(content: Text('This run has no clusters yet')));
       return;
     }
-    final ok = await showDialog<bool>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('Clear all visited marks?'),
-        content: Text(
-          'This unmarks ${visited.length} point(s). It cannot be undone; '
-          'export first if you need a record.',
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx, false),
-            child: const Text('Cancel'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.pop(ctx, true),
-            child: const Text('Clear'),
-          ),
-        ],
-      ),
-    );
-    if (ok == true) {
-      await repo.clearAllVisitedState();
-      ref.invalidate(enabledTreesProvider);
-      messenger.showSnackBar(const SnackBar(content: Text('Visited marks cleared')));
+    final visited = ref.read(datasetStatsProvider).valueOrNull?[target.id]?.visited ?? 0;
+    if (visited == 0) {
+      messenger.showSnackBar(SnackBar(
+        content: Text(clusterView
+            ? 'No visited clusters to clear'
+            : 'No visited points to clear'),
+      ));
+      return;
     }
+    final noun = clusterView ? 'cluster(s)' : 'point(s)';
+    final ok = await _confirm(
+      context,
+      title: clusterView ? 'Clear visited clusters?' : 'Clear visited points?',
+      message: 'This unmarks $visited visited $noun of "${run.name}" '
+          '(${clusterView ? 'cluster' : 'point'} view is selected on the map). '
+          'It cannot be undone; export first if you need a record.',
+      action: 'Clear',
+    );
+    if (!ok) return;
+    await ref.read(treeRepositoryProvider).clearVisitedForDataset(target.id);
+    refreshDatasets(ref, changedDatasetIds: [target.id]);
+    messenger.showSnackBar(const SnackBar(content: Text('Visited marks cleared')));
   }
 }
 
@@ -345,8 +432,8 @@ class _BasemapWarning extends StatelessWidget {
   }
 }
 
-class _EmptyDatasets extends StatelessWidget {
-  const _EmptyDatasets();
+class _EmptyRuns extends StatelessWidget {
+  const _EmptyRuns();
 
   @override
   Widget build(BuildContext context) {
@@ -356,7 +443,7 @@ class _EmptyDatasets extends StatelessWidget {
         children: [
           Icon(Icons.folder_open, size: 56, color: Colors.grey[400]),
           const SizedBox(height: 12),
-          Text('No datasets yet', style: Theme.of(context).textTheme.titleMedium),
+          Text('No runs yet', style: Theme.of(context).textTheme.titleMedium),
           const SizedBox(height: 4),
           Text(
             'Tap "Import CSV" and pick a results file with latitude and '
@@ -370,37 +457,73 @@ class _EmptyDatasets extends StatelessWidget {
   }
 }
 
-class _DatasetCard extends StatelessWidget {
-  const _DatasetCard({
-    required this.dataset,
-    required this.onToggle,
-    required this.onDelete,
+class _RunCard extends StatelessWidget {
+  const _RunCard({
+    required this.run,
+    required this.clusterSet,
+    required this.stats,
+    required this.active,
+    required this.onSelect,
+    required this.onDeleteRun,
+    required this.onDeleteClusters,
   });
 
-  final Dataset dataset;
-  final ValueChanged<bool> onToggle;
-  final VoidCallback onDelete;
+  final Dataset run;
+  final Dataset? clusterSet;
+  final Map<String, DatasetStats> stats;
+  final bool active;
+  final VoidCallback onSelect;
+  final VoidCallback onDeleteRun;
+  final ValueChanged<Dataset> onDeleteClusters;
 
   @override
   Widget build(BuildContext context) {
-    final imported = dataset.importedAt;
+    final theme = Theme.of(context);
+    final imported = run.importedAt;
+    final runStats = stats[run.id];
+    final set = clusterSet;
+    final setStats = set == null ? null : stats[set.id];
+
+    final pointsLine = '${runStats?.total ?? run.treeCount} points'
+        '${runStats == null ? '' : ' · ${runStats.visited} visited'}'
+        '${imported != null ? ' · ${_formatDate(imported)}' : ''}';
+    final clustersLine = set == null
+        ? 'No clusters'
+        : 'Clusters: ${setStats?.total ?? set.treeCount}'
+            '${setStats == null ? '' : ' · ${setStats.visited} visited'}';
+
     return Card(
       margin: const EdgeInsets.only(bottom: 12),
+      shape: active
+          ? RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(12),
+              side: BorderSide(color: theme.colorScheme.primary, width: 2),
+            )
+          : null,
       child: ListTile(
-        title: Text(dataset.name),
-        subtitle: Text(
-          '${dataset.treeCount} points'
-          '${imported != null ? ' · ${_formatDate(imported)}' : ''}'
-          '${dataset.enabled ? '' : ' · hidden'}',
+        onTap: onSelect,
+        leading: Icon(
+          active ? Icons.radio_button_checked : Icons.radio_button_unchecked,
+          color: active ? theme.colorScheme.primary : null,
         ),
-        trailing: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Switch(value: dataset.enabled, onChanged: onToggle),
-            IconButton(
-              tooltip: 'Delete dataset',
-              icon: const Icon(Icons.delete_outline),
-              onPressed: onDelete,
+        title: Text(run.name),
+        subtitle: Text('$pointsLine\n$clustersLine'),
+        isThreeLine: true,
+        trailing: PopupMenuButton<String>(
+          tooltip: 'Run options',
+          onSelected: (value) {
+            if (value == 'delete_clusters' && set != null) onDeleteClusters(set);
+            if (value == 'delete_run') onDeleteRun();
+          },
+          itemBuilder: (_) => [
+            if (set != null)
+              const PopupMenuItem(
+                value: 'delete_clusters',
+                child: Text('Delete clusters'),
+              ),
+            const PopupMenuItem(
+              value: 'delete_run',
+              child: Text('Delete run'),
             ),
           ],
         ),

@@ -10,6 +10,7 @@ import '../utils/bearing_calculator.dart';
 import '../utils/distance_calculator.dart';
 import 'location_provider.dart';
 import 'park_provider.dart';
+import 'run_provider.dart';
 import 'settings_provider.dart';
 
 enum NavigationPhase {
@@ -95,18 +96,30 @@ class NavigationMemory {
   }
 }
 
-final _navigationMemoryProvider =
-    Provider.autoDispose<NavigationMemory>((ref) => NavigationMemory());
+/// One memory per view, so switching between points and clusters keeps each
+/// view's target and route order.
+class NavigationMemories {
+  final NavigationMemory points = NavigationMemory();
+  final NavigationMemory clusters = NavigationMemory();
+}
 
-/// Recomputed on every GPS fix, every change to the points (import, enable,
-/// mark visited) and when the park or arrival radius changes.
+final _navigationMemoriesProvider =
+    Provider.autoDispose<NavigationMemories>((ref) => NavigationMemories());
+
+/// Recomputed on every GPS fix, every change to the visible points (import,
+/// run switch, view switch, mark visited) and when the park or arrival radius
+/// changes. Points and clusters are navigated the same way; only the arrival
+/// radius differs.
 final navigationProvider = Provider.autoDispose<NavigationState>((ref) {
-  final memory = ref.watch(_navigationMemoryProvider);
+  final memories = ref.watch(_navigationMemoriesProvider);
+  final clusterView = ref.watch(clusterViewProvider);
   final parkTrees = ref.watch(parkTreesProvider);
   final location =
       ref.watch(locationControllerProvider.select((s) => s.location));
-  final arrivalRadius =
-      ref.watch(settingsProvider.select((s) => s.arrivalRadiusMeters));
+  final arrivalRadius = ref.watch(settingsProvider.select((s) => clusterView
+      ? s.clusterArrivalRadiusMeters
+      : s.arrivalRadiusMeters));
+  final memory = clusterView ? memories.clusters : memories.points;
   return computeNavigation(
     memory: memory,
     parkTrees: parkTrees,

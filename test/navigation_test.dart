@@ -1,8 +1,8 @@
-import 'package:edge_forestry_mobile/models/tree.dart';
-import 'package:edge_forestry_mobile/models/user_location.dart';
-import 'package:edge_forestry_mobile/providers/navigation_provider.dart';
-import 'package:edge_forestry_mobile/providers/park_provider.dart';
-import 'package:edge_forestry_mobile/services/park_service.dart';
+import 'package:user_navigation_companion/models/tree.dart';
+import 'package:user_navigation_companion/models/user_location.dart';
+import 'package:user_navigation_companion/providers/navigation_provider.dart';
+import 'package:user_navigation_companion/providers/park_provider.dart';
+import 'package:user_navigation_companion/services/park_service.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 Tree _tree(String id, double lat, double lng, {bool visited = false}) => Tree(

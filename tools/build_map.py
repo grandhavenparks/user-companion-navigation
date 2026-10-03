@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Build the offline basemap that is bundled inside the Edge Forestry APK.
+Build the offline basemap that is bundled inside the User Navigation Companion APK.
 
 What it does
 ------------
@@ -64,7 +64,7 @@ LOOKBACK_DAYS = 10
 DEFAULT_BUFFER_M = 500.0
 DEFAULT_MINZOOM = 0
 DEFAULT_MAXZOOM = 15  # Protomaps basemap data stops at z15; the app overzooms to z24.
-USER_AGENT = "EdgeForestryMobile-map-build/1.1 (offline field navigation app)"
+USER_AGENT = "UserNavigationCompanion-map-build/1.3 (offline field navigation app)"
 ATTRIBUTION = "© OpenStreetMap contributors, Protomaps"
 
 
@@ -466,7 +466,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
 def main(argv: list[str]) -> int:
     args = parse_args(argv)
     print("=" * 64)
-    print("Edge Forestry - offline basemap build (Protomaps)")
+    print("User Navigation Companion - offline basemap build (Protomaps)")
     print("=" * 64)
 
     parks = load_parks(args.parks_dir)

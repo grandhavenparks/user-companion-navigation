@@ -1,6 +1,6 @@
 import 'dart:math';
 
-import 'package:edge_forestry_mobile/services/route_planner.dart';
+import 'package:user_navigation_companion/services/route_planner.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {

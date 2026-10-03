@@ -1,7 +1,7 @@
 import 'dart:io';
 import 'dart:typed_data';
 
-import 'package:edge_forestry_mobile/services/basemap_service.dart';
+import 'package:user_navigation_companion/services/basemap_service.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {

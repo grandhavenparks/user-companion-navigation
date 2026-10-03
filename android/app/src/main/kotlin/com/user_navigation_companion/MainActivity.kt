@@ -10,7 +10,7 @@ class MainActivity : FlutterActivity() {
         super.configureFlutterEngine(flutterEngine)
 
         // Keeps the display on while navigating (see lib/services/screen_wake_service.dart).
-        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "edge_forestry/screen")
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "user_navigation_companion/screen")
             .setMethodCallHandler { call, result ->
                 when (call.method) {
                     "setKeepScreenOn" -> {

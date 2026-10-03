@@ -31,13 +31,34 @@
 - `basemapProvider` - offline map (`Basemap`: theme + tile providers).
 - `parksProvider`, `selectedParkIdProvider`, `selectedParkProvider` - parks
   discovered from the asset manifest.
-- `enabledTreesProvider`, `treeByIdProvider`, `datasetsProvider` - database.
-- `parkTreesProvider` - enabled points split by the selected park's areas.
+- `datasetsProvider`, `datasetStatsProvider`, `datasetPointsProvider(id)`,
+  `treeByIdProvider` - database (points of a dataset stay cached in memory).
+- `run_provider.dart`: `activeRunProvider` (one run on the map; default the
+  newest), `activeClusterSetProvider`, `clusterViewProvider` (remembered),
+  `runPointsProvider`, `clusterPointsProvider` and `visiblePointsProvider`
+  (what the map draws and navigates). The map watches both point sets so the
+  view switch never waits for the database.
+- `parkTreesProvider` - visible points split by the selected park's areas;
+  a cluster whose average position falls just outside still belongs to the
+  area of its trees (`Tree.parkId` / `Tree.areaIndex`).
 - `locationControllerProvider` - GPS stream lifecycle (permission, service
   status, approximate-location detection, pause in background, restart on
   resume or interval change). Auto-disposed when the map closes.
 - `navigationProvider` - `NavigationState` recomputed on every fix / data
-  change via the pure function `computeNavigation`.
+  change via the pure function `computeNavigation`. One memory per view
+  (points / clusters), so each view keeps its own target; the arrival radius
+  is 10 m for points and 25 m for clusters (Settings).
+
+## Clusters (`lib/services/cluster_service.dart`)
+
+- Same grid as the old app: 100 m cells fixed to latitude/longitude lines,
+  cell width from the mean latitude; all points of a cell merge (any
+  classification, visited or not) at their average position; label = most
+  common classification; no confidence; largest first, named
+  "Cluster N (k trees)". Cells are additionally split by park area.
+- Stored like an import: a dataset with `kind = clusters` and
+  `parent_id = run`, points with `member_count`, `members`, `park_id`,
+  `area_index`. Creating or importing replaces the run's previous set.
 
 ## Navigation logic
 

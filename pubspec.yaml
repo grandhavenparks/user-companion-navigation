@@ -1,7 +1,7 @@
-name: edge_forestry_mobile
+name: user_navigation_companion
 description: User Navigation Companion - offline-first field navigation to flagged points inside bundled park boundaries.
 publish_to: 'none'
-version: 1.2.0+3
+version: 1.3.3+7
 
 environment:
   sdk: '>=3.10.0 <4.0.0'

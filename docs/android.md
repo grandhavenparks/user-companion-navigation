@@ -15,10 +15,6 @@ Values match the Flutter 3.41 project templates.
 ## Device (Pixel 4, Android 13)
 
 ```bash
-# Remove older builds that used other package ids (wipes their data).
-# "DELETE_FAILED_INTERNAL_ERROR" just means that package is not installed.
-adb uninstall com.edgeforestry
-adb uninstall com.example.edge_forestry_mobile
 
 # Install / update this app
 flutter build apk --release --target-platform android-arm64
@@ -37,4 +33,7 @@ adb uninstall com.user_navigation_companion
 - Permissions: fine + coarse location only. Grant **precise** location; the
   map shows a warning when only approximate location is allowed.
 - The screen is kept on while navigating via `FLAG_KEEP_SCREEN_ON`
-  (`MainActivity.kt`, channel `edge_forestry/screen`).
+  (`MainActivity.kt`, channel `user_navigation_companion/screen`).
+- Database file: `user_navigation_companion.db`.
+- iOS (not built for now): bundle id `com.user-navigation-companion`
+  (Apple does not allow `_`), display name "User Navigation Companion".

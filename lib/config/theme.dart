@@ -60,6 +60,9 @@ class AppTheme {
   /// Point outside the selected park (shown, never navigated).
   static const Color outsideColor = Color(0xFF9E9E9E);
 
+  /// Unvisited cluster inside the selected park (same indigo as the old app).
+  static const Color clusterColor = Color(0xFF3949AB);
+
   static const Color routeColor = Color(0xFF6A1B9A);
   static const Color userColor = Color(0xFF1E88E5);
   static const Color parkBorderColor = Color(0xFF2E7D32);

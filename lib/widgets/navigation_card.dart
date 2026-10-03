@@ -18,7 +18,15 @@ class NavigationCard extends StatelessWidget {
     required this.useFeet,
     required this.onMarkVisited,
     required this.onOpenPoint,
+    this.clusterView = false,
+    this.noPointsMessage,
   });
+
+  /// Navigating clusters instead of points (changes the wording only).
+  final bool clusterView;
+
+  /// Replaces the default text when the area has nothing to navigate.
+  final String? noPointsMessage;
 
   final NavigationState state;
   final String parkName;
@@ -28,6 +36,9 @@ class NavigationCard extends StatelessWidget {
   final bool useFeet;
   final ValueChanged<Tree> onMarkVisited;
   final ValueChanged<Tree> onOpenPoint;
+
+  String get _nouns => clusterView ? 'clusters' : 'points';
+  String get _nounsCapitalised => clusterView ? 'Clusters' : 'Points';
 
   @override
   Widget build(BuildContext context) {
@@ -44,19 +55,19 @@ class NavigationCard extends StatelessWidget {
         return _InfoCard(
           icon: Icons.info_outline,
           text: 'You are outside $parkName. Navigation starts when you are '
-              'inside the park boundary. Points outside the park are shown '
-              'in grey but are not navigated.',
+              'inside the park boundary. $_nounsCapitalised outside the park '
+              'are shown in grey but are not navigated.',
         );
       case NavigationPhase.noPoints:
         return _InfoCard(
           icon: Icons.info_outline,
-          text: 'No imported points in $where. Import a CSV or enable a dataset.',
+          text: noPointsMessage ?? 'No $_nouns in $where.',
         );
       case NavigationPhase.allVisited:
         return _InfoCard(
           icon: Icons.task_alt,
           color: AppTheme.visitedColor,
-          text: 'All ${state.totalInArea} points in $where are visited.',
+          text: 'All ${state.totalInArea} $_nouns in $where are visited.',
         );
       case NavigationPhase.navigating:
         return _buildNavigating(context);
@@ -100,7 +111,9 @@ class NavigationCard extends StatelessWidget {
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       Text(
-                        arrived ? 'You have arrived' : 'Next point',
+                        arrived
+                            ? 'You have arrived'
+                            : (clusterView ? 'Next cluster' : 'Next point'),
                         style: theme.textTheme.labelMedium?.copyWith(color: accent),
                       ),
                       Text(
@@ -119,7 +132,7 @@ class NavigationCard extends StatelessWidget {
                   ),
                 ),
                 IconButton(
-                  tooltip: 'Point details',
+                  tooltip: clusterView ? 'Cluster details' : 'Point details',
                   icon: const Icon(Icons.info_outline),
                   onPressed: () => onOpenPoint(target),
                 ),
@@ -147,7 +160,7 @@ class NavigationCard extends StatelessWidget {
               ),
             const SizedBox(height: 4),
             Text(
-              '${state.visitedInArea} of ${state.totalInArea} visited'
+              '${state.visitedInArea} of ${state.totalInArea} $_nouns visited'
               '${areaLabel.isEmpty ? '' : ' in $areaLabel'}  ·  '
               '${state.upcoming.length} more after this  ·  '
               'route ${formatDistance(state.remainingDistance, useFeet: useFeet)}',

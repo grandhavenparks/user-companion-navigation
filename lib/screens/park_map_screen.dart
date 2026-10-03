@@ -1,26 +1,35 @@
 import 'dart:async';
 import 'dart:math' as math;
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:latlong2/latlong.dart';
 import 'package:vector_map_tiles/vector_map_tiles.dart';
 
+import '../config/app_config.dart';
 import '../config/map_config.dart';
 import '../config/theme.dart';
 import '../models/app_settings.dart';
+import '../models/dataset.dart';
 import '../models/park.dart';
 import '../models/tree.dart';
 import '../models/user_location.dart';
 import '../providers/basemap_provider.dart';
+import '../providers/dataset_repository_provider.dart';
 import '../providers/location_provider.dart';
 import '../providers/navigation_provider.dart';
 import '../providers/park_provider.dart';
+import '../providers/run_provider.dart';
 import '../providers/settings_provider.dart';
 import '../providers/tree_repository_provider.dart';
 import '../providers/trees_provider.dart';
 import '../services/basemap_service.dart';
+import '../services/cluster_service.dart';
+import '../services/csv_points_parser_service.dart';
+import '../services/file_import_service.dart';
+import '../services/visited_points_export_service.dart';
 import '../services/park_service.dart';
 import '../services/screen_wake_service.dart';
 import '../widgets/navigation_card.dart';
@@ -30,17 +39,26 @@ import '../widgets/tree_marker_widget.dart';
 import '../widgets/user_location_layer.dart';
 import 'tree_detail_screen.dart';
 
+/// Reads a cluster CSV in a background isolate (cluster view only).
+CsvPointsParseResult _parseClusterFile((PickedFile, String) input) =>
+    parsePointsCsvBytes(
+      input.$1.bytes,
+      sourceName: input.$1.name,
+      clusters: true,
+      parentRunId: input.$2,
+    );
+
 /// Navigation page. The safety reminder is shown first; the map, GPS and
 /// navigation only start after the user taps "Okay". Closing the reminder
 /// with the back button leaves the page.
-class ParkMapScreen extends StatefulWidget {
+class ParkMapScreen extends ConsumerStatefulWidget {
   const ParkMapScreen({super.key});
 
   @override
-  State<ParkMapScreen> createState() => _ParkMapScreenState();
+  ConsumerState<ParkMapScreen> createState() => _ParkMapScreenState();
 }
 
-class _ParkMapScreenState extends State<ParkMapScreen> {
+class _ParkMapScreenState extends ConsumerState<ParkMapScreen> {
   bool _acknowledged = false;
 
   @override
@@ -54,6 +72,8 @@ class _ParkMapScreenState extends State<ParkMapScreen> {
     final accepted = await showSafetyPrompt(context);
     if (!mounted) return;
     if (accepted) {
+      // Every visit starts with no park selected; the user picks one.
+      ref.read(selectedParkIdProvider.notifier).state = null;
       setState(() => _acknowledged = true);
     } else {
       Navigator.of(context).pop();
@@ -90,9 +110,6 @@ class _ParkMapViewState extends ConsumerState<_ParkMapView> {
   /// Whether we already decided to follow for the current park.
   bool _followDecided = false;
 
-  /// The user picked a park by hand: no automatic park switching.
-  bool _userChosePark = false;
-
   @override
   void dispose() {
     unawaited(ScreenWake.instance.setKeepOn(false));
@@ -107,10 +124,7 @@ class _ParkMapViewState extends ConsumerState<_ParkMapView> {
   void _onLocation(UserLocation? location) {
     if (location == null) return;
     final park = ref.read(selectedParkProvider);
-    if (park == null) {
-      _autoSelectPark(location);
-      return;
-    }
+    if (park == null) return; // the user picks the park
     if (!_followDecided) {
       _followDecided = true;
       if (park.containsPoint(location.latitude, location.longitude)) {
@@ -119,25 +133,7 @@ class _ParkMapViewState extends ConsumerState<_ParkMapView> {
     }
   }
 
-  /// Opens the park the user is standing in, unless a park was chosen by hand.
-  void _autoSelectPark(UserLocation? location) {
-    if (location == null || _userChosePark) return;
-    if (ref.read(selectedParkProvider) != null) return;
-    final parks = ref.read(parksProvider).valueOrNull?.parks ?? const <Park>[];
-    final membership =
-        findParkMembership(parks, location.latitude, location.longitude);
-    if (membership == null) return;
-    // Change provider state outside of the current notification.
-    Future.microtask(() {
-      if (!mounted) return;
-      ref.read(selectedParkIdProvider.notifier).state = membership.park.id;
-      _followDecided = true;
-      _startFollowing(location);
-    });
-  }
-
   void _selectPark(Park park) {
-    _userChosePark = true;
     _followDecided = false;
     ref.read(selectedParkIdProvider.notifier).state = park.id;
     final location = ref.read(locationControllerProvider).location;
@@ -148,6 +144,25 @@ class _ParkMapViewState extends ConsumerState<_ParkMapView> {
       setState(() => _follow = false);
       _fitToPark(park, location: location);
     }
+    _explainEmptyPark(park);
+  }
+
+  /// When the chosen park holds none of the visible points, say where they are.
+  void _explainEmptyPark(Park park) {
+    final counts = ref.read(visibleParkCountsProvider);
+    if ((counts[park.id] ?? 0) > 0) return;
+    final clusterView = ref.read(clusterViewProvider);
+    final noun = clusterView ? 'clusters' : 'points';
+    final parks = ref.read(parksProvider).valueOrNull?.parks ?? const <Park>[];
+    final elsewhere = [
+      for (final p in parks)
+        if ((counts[p.id] ?? 0) > 0) '${p.name} (${counts[p.id]})',
+    ];
+    if (ref.read(activeRunProvider) == null) return;
+    _snack(elsewhere.isEmpty
+        ? 'No $noun of this run are inside a bundled park.'
+        : 'No $noun of this run in ${park.name}. They are in: '
+            '${elsewhere.join(', ')}.');
   }
 
   GeoBounds _boundsFor(Park park, UserLocation? location) {
@@ -207,8 +222,7 @@ class _ParkMapViewState extends ConsumerState<_ParkMapView> {
 
   Future<void> _setVisited(Tree tree, bool visited) async {
     await ref.read(treeRepositoryProvider).setTreeVisited(tree.id, visited);
-    ref.invalidate(enabledTreesProvider);
-    ref.invalidate(treeByIdProvider(tree.id));
+    refreshAfterVisitedChange(ref, tree);
     if (!mounted) return;
     ScaffoldMessenger.of(context)
       ..hideCurrentSnackBar()
@@ -228,6 +242,171 @@ class _ParkMapViewState extends ConsumerState<_ParkMapView> {
   }
 
   // ---------------------------------------------------------------------------
+  // Point / cluster view
+  // ---------------------------------------------------------------------------
+
+  /// Switching is instant: both point sets are already in memory and each
+  /// view keeps its own navigation target.
+  void _toggleClusterView() {
+    final next = !ref.read(clusterViewProvider);
+    ref.read(settingsProvider.notifier).setClusterView(next);
+    final run = ref.read(activeRunProvider);
+    final message = run == null
+        ? (next ? 'Cluster view' : 'Point view')
+        : next
+            ? (ref.read(activeClusterSetProvider) == null
+                ? 'Cluster view: no clusters yet (menu > Create clusters)'
+                : 'Cluster view: ${ref.read(clusterPointsProvider).length} clusters')
+            : 'Point view: ${ref.read(runPointsProvider).length} points';
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(SnackBar(
+        content: Text(message),
+        duration: const Duration(seconds: 2),
+      ));
+  }
+
+  Future<bool> _confirmReplaceClusters(Dataset existing) async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Replace clusters?'),
+        content: Text(
+          'This run already has ${existing.treeCount} clusters. They will be '
+          'replaced by new, unvisited clusters and their visited marks are lost.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Replace'),
+          ),
+        ],
+      ),
+    );
+    return ok == true;
+  }
+
+  /// Makes a fresh cluster set (100 m grid) from the active run's points,
+  /// like an import created on the spot. All clusters start unvisited.
+  Future<void> _createClusters() async {
+    final run = ref.read(activeRunProvider);
+    if (run == null) return;
+    final existing = ref.read(activeClusterSetProvider);
+    if (existing != null && !await _confirmReplaceClusters(existing)) return;
+
+    final points = await ref.read(datasetPointsProvider(run.id).future);
+    final parks = (await ref.read(parksProvider.future)).parks;
+    if (points.isEmpty) {
+      _snack('This run has no points to cluster.');
+      return;
+    }
+    final set = createClusterSet(run, points, parks: parks);
+    await ref
+        .read(datasetRepositoryProvider)
+        .replaceClusterSet(run.id, set.dataset, set.clusters);
+    refreshDatasets(ref, changedDatasetIds: [set.dataset.id]);
+    _snack('Created ${set.clusters.length} clusters from ${points.length} points '
+        '(${AppConfig.clusterCellMeters.round()} m grid).');
+  }
+
+  /// Imports a cluster CSV from storage as the active run's cluster set.
+  Future<void> _importClusterCsv() async {
+    final run = ref.read(activeRunProvider);
+    if (run == null) return;
+    final PickedFile? picked;
+    try {
+      picked = await pickPointsFile();
+    } on FileImportException catch (e) {
+      _snack(e.message);
+      return;
+    } catch (e) {
+      _snack('Could not open the file: $e');
+      return;
+    }
+    if (picked == null) return;
+
+    final result = await compute(_parseClusterFile, (picked, run.id));
+    if (!mounted) return;
+    if (!result.success) {
+      await _showReport('Cluster import failed', [result.error ?? 'Unknown error']);
+      return;
+    }
+    final existing = ref.read(activeClusterSetProvider);
+    if (existing != null && !await _confirmReplaceClusters(existing)) return;
+
+    await ref
+        .read(datasetRepositoryProvider)
+        .replaceClusterSet(run.id, result.dataset!, result.trees!);
+    refreshDatasets(ref, changedDatasetIds: [result.dataset!.id]);
+    if (!mounted) return;
+    await _showReport(
+      'Imported ${result.trees!.length} clusters',
+      result.report!.summaryLines(),
+    );
+  }
+
+  /// Saves all clusters of the active run to a CSV on the device (Android
+  /// "save" dialog). The file can be imported again in cluster view.
+  Future<void> _saveClusters() async {
+    final run = ref.read(activeRunProvider);
+    final set = ref.read(activeClusterSetProvider);
+    if (run == null || set == null) {
+      _snack('This run has no clusters to save.');
+      return;
+    }
+    try {
+      final clusters = await ref.read(datasetPointsProvider(set.id).future);
+      final saved = await saveCsvToDevice(
+        fileName: clustersFileName(run.name),
+        csv: buildVisitedCsv(runName: run.name, points: const [], clusters: clusters),
+        dialogTitle: 'Save clusters CSV',
+      );
+      _snack(saved ? 'Saved ${clusters.length} clusters to device' : 'Save cancelled');
+    } catch (e) {
+      _snack('Saving failed: $e');
+    }
+  }
+
+  void _snack(String message) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(SnackBar(content: Text(message)));
+  }
+
+  Future<void> _showReport(String title, List<String> lines) {
+    return showDialog<void>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text(title),
+        content: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              for (final line in lines)
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 8),
+                  child: Text(line),
+                ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('OK'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // ---------------------------------------------------------------------------
   // Build
   // ---------------------------------------------------------------------------
 
@@ -240,6 +419,13 @@ class _ParkMapViewState extends ConsumerState<_ParkMapView> {
     final parkTrees = ref.watch(parkTreesProvider);
     final basemap = ref.watch(basemapProvider);
     final settings = ref.watch(settingsProvider);
+    final clusterView = settings.clusterView;
+    final activeRun = ref.watch(activeRunProvider);
+    final clusterSet = ref.watch(activeClusterSetProvider);
+    // Keep both the run's points and its clusters loaded, so switching views
+    // never waits for the database.
+    ref.watch(runPointsProvider);
+    ref.watch(clusterPointsProvider);
 
     ref.listen<bool>(
       navigationProvider.select((s) => s.isActive),
@@ -256,15 +442,53 @@ class _ParkMapViewState extends ConsumerState<_ParkMapView> {
       locationControllerProvider.select((s) => s.location),
       (_, location) => _onLocation(location),
     );
-    ref.listen<AsyncValue<ParkLoadResult>>(
-      parksProvider,
-      (_, _) => _autoSelectPark(ref.read(locationControllerProvider).location),
-    );
+    final parkCounts = ref.watch(visibleParkCountsProvider);
+    final hereMembership = locationState.location == null
+        ? null
+        : findParkMembership(
+            parksAsync.valueOrNull?.parks ?? const <Park>[],
+            locationState.location!.latitude,
+            locationState.location!.longitude,
+          );
 
     return Scaffold(
       appBar: AppBar(
         title: Text(park?.name ?? 'Park map'),
         actions: [
+          IconButton(
+            icon: Icon(clusterView ? Icons.bubble_chart : Icons.bubble_chart_outlined),
+            tooltip: clusterView
+                ? 'Cluster view - tap for individual points'
+                : 'Point view - tap for clusters (${AppConfig.clusterCellMeters.round()} m)',
+            onPressed: _toggleClusterView,
+          ),
+          if (clusterView)
+            PopupMenuButton<String>(
+              tooltip: 'Cluster menu',
+              enabled: activeRun != null,
+              onSelected: (value) {
+                if (value == 'create') _createClusters();
+                if (value == 'import') _importClusterCsv();
+                if (value == 'save') _saveClusters();
+              },
+              itemBuilder: (_) => [
+                PopupMenuItem(
+                  value: 'create',
+                  child: Text(clusterSet == null
+                      ? 'Create clusters'
+                      : 'Re-create clusters'),
+                ),
+                const PopupMenuItem(
+                  value: 'import',
+                  child: Text('Import cluster CSV'),
+                ),
+                PopupMenuItem(
+                  value: 'save',
+                  enabled: clusterSet != null,
+                  child: const Text('Save clusters to device (CSV)'),
+                ),
+              ],
+            ),
           IconButton(
             icon: const Icon(Icons.home),
             tooltip: 'Home',
@@ -279,10 +503,22 @@ class _ParkMapViewState extends ConsumerState<_ParkMapView> {
             parksAsync: parksAsync,
             selected: park,
             onSelected: _selectPark,
+            counts: parkCounts,
+            noun: clusterView ? 'clusters' : 'points',
+          ),
+          _RunBar(
+            run: activeRun,
+            clusterView: clusterView,
+            clusterSet: clusterSet,
+            countInPark: park == null ? null : (parkCounts[park.id] ?? 0),
           ),
           Expanded(
             child: park == null
-                ? _NoParkPlaceholder(parksAsync: parksAsync)
+                ? _NoParkPlaceholder(
+                    parksAsync: parksAsync,
+                    herePark: hereMembership?.park,
+                    onOpen: _selectPark,
+                  )
                 : Stack(
                     children: [
                       _buildMap(
@@ -302,6 +538,16 @@ class _ParkMapViewState extends ConsumerState<_ParkMapView> {
                           crossAxisAlignment: CrossAxisAlignment.stretch,
                           children: [
                             ..._buildBanners(locationState, basemap),
+                            if (clusterView && activeRun != null && clusterSet == null)
+                              StatusBanner(
+                                icon: Icons.bubble_chart,
+                                color: AppTheme.clusterColor,
+                                message: 'This run has no clusters yet, so the '
+                                    'map is empty. Create or import them from '
+                                    'the ⋮ menu, or switch to point view.',
+                                actionLabel: 'Point view',
+                                onAction: _toggleClusterView,
+                              ),
                             NavigationCard(
                               state: navigation,
                               parkName: park.name,
@@ -311,6 +557,13 @@ class _ParkMapViewState extends ConsumerState<_ParkMapView> {
                               useFeet: settings.useFeet,
                               onMarkVisited: (tree) => _setVisited(tree, true),
                               onOpenPoint: _openPoint,
+                              clusterView: clusterView,
+                              noPointsMessage: activeRun == null
+                                  ? 'No run imported. Import a CSV on Home.'
+                                  : clusterView && clusterSet == null
+                                      ? 'No clusters for this run yet. Use the '
+                                          'cluster menu (⋮) to create or import them.'
+                                      : null,
                             ),
                           ],
                         ),
@@ -456,9 +709,13 @@ class _ParkMapViewState extends ConsumerState<_ParkMapView> {
         Marker(
           key: ValueKey(tree.id),
           point: tree.position,
-          width: kind.size,
-          height: kind.size,
-          child: PointMarker(kind: kind, onTap: () => _openPoint(tree)),
+          width: markerSize(kind, clusterCount: tree.memberCount),
+          height: markerSize(kind, clusterCount: tree.memberCount),
+          child: PointMarker(
+            kind: kind,
+            clusterCount: tree.memberCount,
+            onTap: () => _openPoint(tree),
+          ),
         ),
     ];
   }
@@ -522,16 +779,84 @@ class _ParkMapViewState extends ConsumerState<_ParkMapView> {
   }
 }
 
+/// Which run (CSV) and view the map is showing.
+class _RunBar extends StatelessWidget {
+  const _RunBar({
+    required this.run,
+    required this.clusterView,
+    required this.clusterSet,
+    required this.countInPark,
+  });
+
+  final Dataset? run;
+  final bool clusterView;
+  final Dataset? clusterSet;
+
+  /// Visible points (or clusters) inside the selected park; null when no
+  /// park is selected.
+  final int? countInPark;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final current = run;
+    final inPark = countInPark;
+    final where = inPark == null ? '' : ' ($inPark in this park)';
+    final String text;
+    if (current == null) {
+      text = 'No run imported';
+    } else if (clusterView) {
+      final set = clusterSet;
+      text = set == null
+          ? 'Run: ${current.name} · clusters: none yet'
+          : 'Run: ${current.name} · ${set.treeCount} clusters$where';
+    } else {
+      text = 'Run: ${current.name} · ${current.treeCount} points$where';
+    }
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.fromLTRB(12, 0, 12, 6),
+      color: theme.colorScheme.surfaceContainerHighest,
+      child: Row(
+        children: [
+          Icon(
+            clusterView ? Icons.bubble_chart : Icons.place_outlined,
+            size: 16,
+            color: theme.colorScheme.onSurfaceVariant,
+          ),
+          const SizedBox(width: 6),
+          Expanded(
+            child: Text(
+              text,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: theme.textTheme.bodySmall,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
 class _ParkSelector extends StatelessWidget {
   const _ParkSelector({
     required this.parksAsync,
     required this.selected,
     required this.onSelected,
+    required this.counts,
+    required this.noun,
   });
 
   final AsyncValue<ParkLoadResult> parksAsync;
   final Park? selected;
   final ValueChanged<Park> onSelected;
+
+  /// Visible points (or clusters) of the active run per park id.
+  final Map<String, int> counts;
+
+  /// "points" or "clusters".
+  final String noun;
 
   @override
   Widget build(BuildContext context) {
@@ -557,9 +882,13 @@ class _ParkSelector extends StatelessWidget {
                             DropdownMenuItem(
                               value: park.id,
                               child: Text(
-                                park.areas.length > 1
-                                    ? '${park.name} (${park.areas.length} areas)'
-                                    : park.name,
+                                [
+                                  park.name,
+                                  if (park.areas.length > 1)
+                                    '${park.areas.length} areas',
+                                  if ((counts[park.id] ?? 0) > 0)
+                                    '${counts[park.id]} $noun',
+                                ].join(' · '),
                                 overflow: TextOverflow.ellipsis,
                               ),
                             ),
@@ -601,14 +930,23 @@ class _ParkSelector extends StatelessWidget {
 }
 
 class _NoParkPlaceholder extends StatelessWidget {
-  const _NoParkPlaceholder({required this.parksAsync});
+  const _NoParkPlaceholder({
+    required this.parksAsync,
+    required this.herePark,
+    required this.onOpen,
+  });
 
   final AsyncValue<ParkLoadResult> parksAsync;
+
+  /// Park the user is standing in (by GPS), if any.
+  final Park? herePark;
+  final ValueChanged<Park> onOpen;
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final hasParks = parksAsync.valueOrNull?.parks.isNotEmpty ?? false;
+    final here = herePark;
     return Center(
       child: Padding(
         padding: const EdgeInsets.all(24),
@@ -622,14 +960,22 @@ class _NoParkPlaceholder extends StatelessWidget {
             const SizedBox(height: 8),
             Text(
               hasParks
-                  ? 'Choose a park above. When you are inside a park it opens '
-                      'automatically once GPS has a fix.'
+                  ? 'Choose a park above. The list shows how many points of '
+                      'the active run each park has.'
                   : 'Add park boundaries to parks/*.geojson, run '
                       'tools/build_map.py and rebuild the app.',
               style: theme.textTheme.bodyMedium
                   ?.copyWith(color: theme.colorScheme.onSurfaceVariant),
               textAlign: TextAlign.center,
             ),
+            if (here != null) ...[
+              const SizedBox(height: 16),
+              FilledButton.icon(
+                onPressed: () => onOpen(here),
+                icon: const Icon(Icons.my_location),
+                label: Text('You are in ${here.name} - open it'),
+              ),
+            ],
           ],
         ),
       ),

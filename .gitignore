@@ -10,6 +10,9 @@
 .svn/
 migrate_working_dir/
 
+# Code dump used for sharing the project, not part of the app
+all_files.txt
+
 # Python virtual environment for tools/build_map.py
 .venv/
 __pycache__/

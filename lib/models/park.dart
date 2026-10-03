@@ -123,3 +123,20 @@ class Park {
   String areaLabel(int index) =>
       areas.length > 1 ? 'area ${index + 1} of ${areas.length}' : '';
 }
+
+/// Which park (and area) a location belongs to.
+class ParkMembership {
+  const ParkMembership(this.park, this.areaIndex);
+
+  final Park park;
+  final int areaIndex;
+}
+
+/// First park whose areas contain the location, or null.
+ParkMembership? findParkMembership(List<Park> parks, double lat, double lng) {
+  for (final park in parks) {
+    final area = park.areaIndexAt(lat, lng);
+    if (area != null) return ParkMembership(park, area);
+  }
+  return null;
+}

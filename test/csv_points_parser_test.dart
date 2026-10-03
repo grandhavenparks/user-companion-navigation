@@ -1,6 +1,9 @@
 import 'dart:convert';
 
-import 'package:edge_forestry_mobile/services/csv_points_parser_service.dart';
+import 'package:user_navigation_companion/models/dataset.dart';
+import 'package:user_navigation_companion/models/tree.dart';
+import 'package:user_navigation_companion/services/csv_points_parser_service.dart';
+import 'package:user_navigation_companion/services/visited_points_export_service.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 CsvPointsParseResult parse(String csv) => parsePointsCsv(csv, sourceName: 'test.csv');
@@ -129,5 +132,88 @@ void main() {
   test('dataset name from file name', () {
     expect(datasetNameFromFile('oak_wilt_results_20261002_225155.csv'),
         'oak_wilt_results_20261002_225155');
+  });
+
+  group('cluster files (cluster view only)', () {
+    const oldAppExport =
+        'count,latitude,longitude,avg_confidence,dominant_classification,dominant_predicted_class\n'
+        '5,43.05,-86.23,99.50,THIS PICTURE HAS OAK WILT,\n'
+        '1,43.06,-86.24,,,\n';
+
+    test('old app aggregated CSV imports as clusters without confidence', () {
+      final r = parsePointsCsv(oldAppExport,
+          sourceName: 'aggregated_points.csv', clusters: true, parentRunId: 'run1');
+      expect(r.success, isTrue, reason: r.error);
+      final first = r.trees!.first;
+      expect(first.memberCount, 5);
+      expect(first.classification, 'THIS PICTURE HAS OAK WILT');
+      expect(first.predictionScore, isNull);
+      expect(first.filename, 'Cluster 1 (5 trees)');
+      expect(r.trees![1].filename, 'Cluster 2 (1 tree)');
+      expect(r.dataset!.kind, DatasetKind.clusters);
+      expect(r.dataset!.parentId, 'run1');
+    });
+
+    test('a cluster file is refused on Home (point import)', () {
+      final r = parsePointsCsv(oldAppExport, sourceName: 'aggregated_points.csv');
+      expect(r.success, isFalse);
+      expect(r.error, contains('cluster file'));
+    });
+
+    test('a plain points file is refused in cluster view', () {
+      final r = parsePointsCsv('lat,lon\n45.1,-93.1\n',
+          sourceName: 'points.csv', clusters: true, parentRunId: 'run1');
+      expect(r.success, isFalse);
+      expect(r.error, contains('points file'));
+    });
+
+    test('visited export round-trips: points on Home, clusters in cluster view', () {
+      final csv = buildVisitedCsv(
+        runName: 'oak run',
+        points: const [
+          Tree(
+            id: 'p',
+            datasetId: 'run',
+            filename: 'IMG_1.jpg',
+            latitude: 43.05,
+            longitude: -86.23,
+            classification: 'OAK',
+            predictionScore: 99.1,
+            visited: true,
+          ),
+        ],
+        clusters: const [
+          Tree(
+            id: 'c',
+            datasetId: 'set',
+            filename: 'Cluster 1 (2 trees)',
+            latitude: 43.051,
+            longitude: -86.231,
+            classification: 'OAK',
+            memberCount: 2,
+            members: ['IMG_1.jpg', 'IMG_2.jpg'],
+            visited: true,
+          ),
+        ],
+      );
+      final points = parsePointsCsv(csv, sourceName: 'visited.csv');
+      expect(points.trees!.single.filename, 'IMG_1.jpg');
+      expect(points.trees!.single.predictionScore, 99.1);
+      expect(points.report!.otherTypeRows, 1);
+
+      final clusters = parsePointsCsv(csv,
+          sourceName: 'visited.csv', clusters: true, parentRunId: 'run');
+      final c = clusters.trees!.single;
+      expect(c.memberCount, 2);
+      expect(c.members, ['IMG_1.jpg', 'IMG_2.jpg']);
+      expect(c.filename, 'Cluster 1 (2 trees)');
+      expect(c.predictionScore, isNull);
+      expect(c.visited, isFalse, reason: 'imports always start unvisited');
+    });
+
+    test('a "type" column with other values is an ordinary column', () {
+      final r = parsePointsCsv('lat,lon,type\n45.1,-93.1,oak\n', sourceName: 'x.csv');
+      expect(r.trees, hasLength(1));
+    });
   });
 }

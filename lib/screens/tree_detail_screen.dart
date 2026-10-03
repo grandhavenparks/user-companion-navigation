@@ -3,17 +3,20 @@ import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../config/theme.dart';
+import '../models/dataset.dart';
 import '../models/park.dart';
 import '../models/tree.dart';
 import '../providers/dataset_provider.dart';
 import '../providers/location_provider.dart';
 import '../providers/park_provider.dart';
+import '../providers/run_provider.dart';
 import '../providers/settings_provider.dart';
 import '../providers/tree_repository_provider.dart';
 import '../providers/trees_provider.dart';
 import '../utils/bearing_calculator.dart';
 import '../utils/distance_calculator.dart';
 
+/// Details of a point or a cluster, with Mark visited / not visited.
 class TreeDetailScreen extends ConsumerWidget {
   const TreeDetailScreen({super.key, required this.treeId});
 
@@ -26,8 +29,7 @@ class TreeDetailScreen extends ConsumerWidget {
     bool visited,
   ) async {
     await ref.read(treeRepositoryProvider).setTreeVisited(tree.id, visited);
-    ref.invalidate(treeByIdProvider(tree.id));
-    ref.invalidate(enabledTreesProvider);
+    refreshAfterVisitedChange(ref, tree);
     if (context.mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text(visited ? 'Marked visited' : 'Marked not visited')),
@@ -40,25 +42,25 @@ class TreeDetailScreen extends ConsumerWidget {
     final treeAsync = ref.watch(treeByIdProvider(treeId));
     final location = ref.watch(locationControllerProvider).location;
     final parks = ref.watch(parksProvider).valueOrNull?.parks ?? const <Park>[];
-    final datasets = ref.watch(datasetsProvider).valueOrNull ?? const [];
+    final datasets = ref.watch(datasetsProvider).valueOrNull ?? const <Dataset>[];
     final useFeet = ref.watch(settingsProvider.select((s) => s.useFeet));
 
     return Scaffold(
-      appBar: AppBar(title: const Text('Point details')),
+      appBar: AppBar(
+        title: Text(treeAsync.valueOrNull?.isCluster ?? false
+            ? 'Cluster details'
+            : 'Point details'),
+      ),
       body: treeAsync.when(
         loading: () => const Center(child: CircularProgressIndicator()),
         error: (e, _) => Center(child: Text('Error: $e')),
         data: (tree) {
           if (tree == null) {
-            return const Center(child: Text('Point not found'));
+            return const Center(child: Text('Not found'));
           }
           final theme = Theme.of(context);
-          final membership =
-              findParkMembership(parks, tree.latitude, tree.longitude);
-          String? datasetName;
-          for (final d in datasets) {
-            if (d.id == tree.datasetId) datasetName = d.name;
-          }
+          final membership = membershipOf(parks, tree);
+          final runName = _runName(datasets, tree.datasetId);
           final distance = location == null
               ? null
               : calculateDistance(location.latitude, location.longitude,
@@ -69,6 +71,7 @@ class TreeDetailScreen extends ConsumerWidget {
                   tree.latitude, tree.longitude);
           final coordinates =
               '${tree.latitude.toStringAsFixed(7)}, ${tree.longitude.toStringAsFixed(7)}';
+          final count = tree.memberCount;
 
           return ListView(
             padding: const EdgeInsets.all(16),
@@ -90,10 +93,21 @@ class TreeDetailScreen extends ConsumerWidget {
                 ],
               ),
               const SizedBox(height: 8),
-              if (tree.classification != null)
-                Text(tree.classification!, style: theme.textTheme.titleMedium),
-              if (tree.confidenceLabel != null)
-                Text('Confidence ${tree.confidenceLabel}'),
+              if (tree.isCluster) ...[
+                Text(
+                  count != null && count > 0
+                      ? '$count ${count == 1 ? 'tree' : 'trees'} in this cluster'
+                      : 'Number of trees unknown (imported cluster file)',
+                  style: theme.textTheme.titleMedium,
+                ),
+                if (tree.classification != null)
+                  Text('Most common classification: ${tree.classification}'),
+              ] else ...[
+                if (tree.classification != null)
+                  Text(tree.classification!, style: theme.textTheme.titleMedium),
+                if (tree.confidenceLabel != null)
+                  Text('Confidence ${tree.confidenceLabel}'),
+              ],
               if (tree.description != null) ...[
                 const SizedBox(height: 8),
                 Text(tree.description!),
@@ -122,7 +136,9 @@ class TreeDetailScreen extends ConsumerWidget {
                 contentPadding: EdgeInsets.zero,
                 leading: const Icon(Icons.place_outlined),
                 title: Text(coordinates),
-                subtitle: const Text('Latitude, longitude (WGS84)'),
+                subtitle: Text(tree.isCluster
+                    ? 'Average position of its trees (WGS84)'
+                    : 'Latitude, longitude (WGS84)'),
                 trailing: IconButton(
                   tooltip: 'Copy coordinates',
                   icon: const Icon(Icons.copy),
@@ -152,12 +168,12 @@ class TreeDetailScreen extends ConsumerWidget {
                     ? 'Shown on the map, not part of navigation'
                     : 'Included in navigation'),
               ),
-              if (datasetName != null)
+              if (runName != null)
                 ListTile(
                   contentPadding: EdgeInsets.zero,
                   leading: const Icon(Icons.folder_outlined),
-                  title: Text(datasetName),
-                  subtitle: const Text('Dataset'),
+                  title: Text(runName),
+                  subtitle: Text(tree.isCluster ? 'Clusters of run' : 'Run'),
                 ),
               if (tree.visited && tree.visitedAt != null)
                 ListTile(
@@ -165,6 +181,20 @@ class TreeDetailScreen extends ConsumerWidget {
                   leading: const Icon(Icons.schedule),
                   title: Text(tree.visitedAt!.toLocal().toString().split('.').first),
                   subtitle: const Text('Visited at'),
+                ),
+              if (tree.isCluster && tree.members.isNotEmpty)
+                ExpansionTile(
+                  tilePadding: EdgeInsets.zero,
+                  leading: const Icon(Icons.list),
+                  title: Text('Trees in this cluster (${tree.members.length})'),
+                  children: [
+                    for (final member in tree.members)
+                      ListTile(
+                        dense: true,
+                        contentPadding: const EdgeInsets.only(left: 16),
+                        title: Text(member),
+                      ),
+                  ],
                 ),
               const SizedBox(height: 16),
               FilledButton.icon(
@@ -178,6 +208,21 @@ class TreeDetailScreen extends ConsumerWidget {
         },
       ),
     );
+  }
+
+  /// Run name for a point, or the parent run's name for a cluster.
+  String? _runName(List<Dataset> datasets, String datasetId) {
+    Dataset? find(String? id) {
+      for (final d in datasets) {
+        if (d.id == id) return d;
+      }
+      return null;
+    }
+
+    final dataset = find(datasetId);
+    if (dataset == null) return null;
+    if (dataset.isClusterSet) return find(dataset.parentId)?.name ?? dataset.name;
+    return dataset.name;
   }
 }
 

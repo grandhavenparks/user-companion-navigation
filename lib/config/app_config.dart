@@ -3,11 +3,11 @@ class AppConfig {
   AppConfig._();
 
   static const String appName = 'User Navigation Companion';
-  static const String appVersion = '1.2.0';
+  static const String appVersion = '1.3.3';
 
   /// SQLite database for datasets, points and visit state.
-  static const String databaseName = 'edge_forestry.db';
-  static const int databaseVersion = 2;
+  static const String databaseName = 'user_navigation_companion.db';
+  static const int databaseVersion = 3;
 
   // --- GPS -----------------------------------------------------------------
 
@@ -27,6 +27,15 @@ class AppConfig {
   /// Distance at which a point counts as "arrived".
   static const double defaultArrivalRadiusMeters = 10;
   static const List<double> arrivalRadiusChoices = [5, 10, 15, 20, 30];
+
+  /// "Arrived" distance for clusters (a cluster covers a 100 m cell).
+  static const double defaultClusterArrivalRadiusMeters = 25;
+  static const List<double> clusterArrivalRadiusChoices = [10, 15, 20, 25, 30, 40, 50];
+
+  // --- Clusters ------------------------------------------------------------
+
+  /// Grid cell size used to merge nearby points (same as the old app).
+  static const double clusterCellMeters = 100;
 
   /// When the user wanders off, a different point becomes the target once it
   /// is closer than the current target by at least

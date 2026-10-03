@@ -43,7 +43,7 @@ class SettingsScreen extends ConsumerWidget {
           ),
           ListTile(
             title: const Text('Arrival radius'),
-            subtitle: const Text('Distance at which "Mark visited" is offered'),
+            subtitle: const Text('Points: distance at which "Mark visited" is offered'),
             trailing: DropdownButton<double>(
               value: settings.arrivalRadiusMeters,
               underline: const SizedBox.shrink(),
@@ -53,6 +53,22 @@ class SettingsScreen extends ConsumerWidget {
               ],
               onChanged: (v) {
                 if (v != null) notifier.setArrivalRadiusMeters(v);
+              },
+            ),
+          ),
+          ListTile(
+            title: const Text('Cluster arrival radius'),
+            subtitle: Text('For clusters (${AppConfig.clusterCellMeters.round()} m '
+                'grid); points use the radius above'),
+            trailing: DropdownButton<double>(
+              value: settings.clusterArrivalRadiusMeters,
+              underline: const SizedBox.shrink(),
+              items: [
+                for (final r in AppConfig.clusterArrivalRadiusChoices)
+                  DropdownMenuItem(value: r, child: Text('${r.round()} m')),
+              ],
+              onChanged: (v) {
+                if (v != null) notifier.setClusterArrivalRadiusMeters(v);
               },
             ),
           ),

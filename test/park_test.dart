@@ -1,4 +1,4 @@
-import 'package:edge_forestry_mobile/services/park_service.dart';
+import 'package:user_navigation_companion/services/park_service.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 const _square = '[[[-93.04,45.34],[-93.02,45.34],[-93.02,45.36],[-93.04,45.36],[-93.04,45.34]]]';
