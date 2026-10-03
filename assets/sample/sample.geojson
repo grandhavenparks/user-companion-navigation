@@ -1,0 +1,20 @@
+{
+  "type": "FeatureCollection",
+  "features": [
+    {
+      "type": "Feature",
+      "properties": {
+        "filename": "IMG_0189.jpg",
+        "image_s3_key": "uploads/52d0eb86d339202f/96da5a8a-5bc7-4003-b31b-54f43d653d03_IMG_0189.jpg",
+        "prediction": "71.40%",
+        "predicted_class": "Environment",
+        "classification": "THIS AREA IS HEALTHY (ENVIRONMENT)",
+        "description": "This area shows no signs of Oak Wilt."
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [-92.95339714166667, 45.39626368222222]
+      }
+    }
+  ]
+}
