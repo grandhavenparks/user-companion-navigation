@@ -1,38 +1,31 @@
-import 'package:flutter_map/flutter_map.dart';
+import 'dart:ui';
 
-import '../services/map_cache_service.dart';
-import 'tile_zoom_limits.dart';
-
-/// Map tile layer configuration.
-///
-/// Only OpenTopoMap is configured here. OSM was removed because
-/// `tile.openstreetmap.org` blocks bundled offline prefetch (see
-/// `map_layer_selector.dart` for the longer note). The bundled
-/// `assets/tiles/osm_tiles.db` is no longer imported or referenced from
-/// runtime; the asset file is intentionally kept on disk for now.
+/// Offline basemap configuration (Protomaps vector tiles bundled as MBTiles).
 class MapConfig {
   MapConfig._();
 
-  static const String topoAttribution =
-      '© <a href="https://opentopomap.org/">OpenTopoMap</a> contributors';
+  /// Written by `tools/build_map.py`.
+  static const String basemapAsset = 'assets/map/basemap.mbtiles';
+  static const String manifestAsset = 'assets/map/map_manifest.json';
 
-  static const double tileSize = 256.0;
-  static const int panBuffer = 1;
+  /// Protomaps "light" style, version 4 (CC0), shipped with the app.
+  static const String styleAsset = 'assets/map/protomaps_light_v4.json';
 
-  /// OpenTopoMap — max zoom is at most [TileZoomLimits.maxZoomTopo] (server max 17).
-  static TileLayer openTopoMapLayer(TileZoomLimits limits) {
-    final maxZ = limits.maxZoomTopo;
-    final z = maxZ.toDouble();
-    return TileLayer(
-      urlTemplate: 'https://tile.opentopomap.org/{z}/{x}/{y}.png',
-      userAgentPackageName: 'com.example.usercompanionnavigation',
-      maxZoom: z,
-      minZoom: limits.minZoomForMap,
-      maxNativeZoom: maxZ,
-      tileSize: tileSize,
-      panBuffer: panBuffer,
-      tileProvider: MapCacheService.instance.getTileProvider(MapCacheService.topoStoreName),
-      errorTileCallback: (tile, error, stackTrace) {},
-    );
-  }
+  /// Source id used by the style's layers.
+  static const String tileSourceId = 'protomaps';
+
+  /// Vector data stops at z15; tiles are rendered sharply up to [maxZoom].
+  static const double minZoom = 3;
+  static const double maxZoom = 24;
+
+  /// Zoom used when the map starts following the user.
+  static const double followZoom = 18;
+
+  /// Upper bound when fitting the camera to a park or area.
+  static const double fitMaxZoom = 19;
+
+  static const String attribution = '© OpenStreetMap contributors, Protomaps';
+
+  /// Shown where no map data exists (outside the bundled extract).
+  static const Color backgroundColor = Color(0xFFE0E0E0);
 }

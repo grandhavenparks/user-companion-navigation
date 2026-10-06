@@ -1,4 +1,5 @@
 import '../models/dataset.dart';
+import '../models/tree.dart';
 import '../services/database_service.dart';
 
 class DatasetRepository {
@@ -6,14 +7,23 @@ class DatasetRepository {
 
   final DatabaseService _db;
 
+  /// Runs and cluster sets, newest first.
   Future<List<Dataset>> getAllDatasets() => _db.getAllDatasets();
 
-  Future<Dataset?> getDatasetById(String id) => _db.getDatasetById(id);
+  /// Saves an imported run and its points atomically.
+  Future<void> importDataset(Dataset dataset, List<Tree> trees) =>
+      _db.insertDatasetWithTrees(dataset, trees);
 
-  Future<void> saveDataset(Dataset dataset) => _db.insertDataset(dataset);
+  /// Replaces the cluster set of [runId] (fresh clusters, all unvisited).
+  Future<void> replaceClusterSet(
+    String runId,
+    Dataset clusterSet,
+    List<Tree> clusters,
+  ) =>
+      _db.replaceClusterSet(runId, clusterSet, clusters);
 
-  Future<void> setDatasetEnabled(String id, bool enabled) =>
-      _db.updateDatasetEnabled(id, enabled);
-
+  /// Deletes a run (with its clusters) or a cluster set.
   Future<void> deleteDataset(String id) => _db.deleteDataset(id);
+
+  Future<Map<String, DatasetStats>> getDatasetStats() => _db.getDatasetStats();
 }

@@ -1,126 +1,108 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:latlong2/latlong.dart';
+
 import '../models/park.dart';
 import '../models/tree.dart';
 import '../services/park_service.dart';
-import '../services/park_route_service.dart';
-import '../services/points_service.dart';
-import 'trees_provider.dart';
-import 'location_provider.dart';
+import 'run_provider.dart';
 
-/// Provider for all available parks
-final parksProvider = FutureProvider<List<Park>>((ref) async {
-  return await ParkService.instance.loadParks();
+export '../models/park.dart' show ParkMembership, findParkMembership;
+
+/// All parks bundled under `parks/` (plus files that failed to load).
+final parksProvider = FutureProvider<ParkLoadResult>((ref) {
+  return ParkService.instance.loadParks();
 });
 
-/// Provider for the currently selected park
-final selectedParkProvider = StateProvider<Park?>((ref) => null);
+/// Id of the park shown on the map; remembered while the app runs.
+final selectedParkIdProvider = StateProvider<String?>((ref) => null);
 
-/// Provider for trees within the selected park
-final parkTreesProvider = Provider<List<Tree>>((ref) {
-  final selectedPark = ref.watch(selectedParkProvider);
-  final treesAsync = ref.watch(enabledTreesProvider);
-
-  return treesAsync.when(
-    data: (trees) {
-      if (selectedPark == null) return [];
-
-      // Filter trees within park boundary
-      return trees.where((tree) {
-        return selectedPark.containsPoint(tree.latitude, tree.longitude);
-      }).toList();
-    },
-    loading: () => [],
-    error: (_, __) => [],
-  );
-});
-
-/// Provider for the park route (closed loop)
-final parkRouteProvider = Provider<ParkRoute?>((ref) {
-  final selectedPark = ref.watch(selectedParkProvider);
-  final parkTrees = ref.watch(parkTreesProvider);
-  final locationAsync = ref.watch(locationStreamProvider);
-
-  if (selectedPark == null || parkTrees.isEmpty) {
-    return null;
+final selectedParkProvider = Provider<Park?>((ref) {
+  final id = ref.watch(selectedParkIdProvider);
+  if (id == null) return null;
+  final parks = ref.watch(parksProvider).valueOrNull?.parks ?? const <Park>[];
+  for (final park in parks) {
+    if (park.id == id) return park;
   }
-
-  return locationAsync.when(
-    data: (location) {
-      if (location == null) return null;
-
-      // Create closed-loop route through unvisited trees
-      final unvisitedTrees = parkTrees.where((t) => !t.visited).toList();
-      if (unvisitedTrees.isEmpty) return null;
-
-      return ParkRouteService.createClosedLoop(
-        startLocation: location,
-        trees: unvisitedTrees,
-      );
-    },
-    loading: () => null,
-    error: (_, __) => null,
-  );
+  return null;
 });
 
-/// Provider for the next tree to visit in the route
-final nextTreeProvider = Provider<Tree?>((ref) {
-  final selectedPark = ref.watch(selectedParkProvider);
-  final route = ref.watch(parkRouteProvider);
-  final locationAsync = ref.watch(locationStreamProvider);
+/// The visible points (active run's points or clusters) split by the
+/// selected park's areas.
+@immutable
+class ParkTrees {
+  const ParkTrees({
+    required this.park,
+    required this.all,
+    required this.areaOf,
+  });
 
-  if (selectedPark == null || route == null) return null;
+  final Park? park;
 
-  return locationAsync.when(
-    data: (location) {
-      if (location == null) return null;
-      final nextTree = route.getNextTree(location);
-      
-      // Double-check that next tree is within the selected park
-      if (nextTree != null && 
-          !selectedPark.containsPoint(nextTree.latitude, nextTree.longitude)) {
-        return null; // Tree is outside park, don't show it
-      }
-      
-      return nextTree;
-    },
-    loading: () => null,
-    error: (_, __) => null,
-  );
-});
-/// Closed-loop polygon around all enabled imported points that lie inside the park boundary.
-///
-/// Uses [ref.watch] on [enabledTreesProvider] so the polygon updates immediately after CSV import.
-final parkPointsProvider = Provider.family<List<LatLng>, String>((ref, parkId) {
-  final parksAsync = ref.watch(parksProvider);
-  final treesAsync = ref.watch(enabledTreesProvider);
+  /// Every visible point (inside and outside the park).
+  final List<Tree> all;
 
-  return parksAsync.when(
-    data: (parks) {
-      Park? park;
-      for (final p in parks) {
-        if (p.id == parkId) {
-          park = p;
-          break;
-        }
-      }
-      if (park == null) return [];
+  /// Point id -> index of the park area it belongs to. Points outside the
+  /// park are not in this map.
+  final Map<String, int> areaOf;
 
-      return treesAsync.when(
-        data: (trees) {
-          final points = trees
-              .where((t) => park!.containsPoint(t.latitude, t.longitude))
-              .map((t) => ParkPoint(latitude: t.latitude, longitude: t.longitude))
-              .toList();
-          if (points.isEmpty) return [];
-          return PointsService.instance.createClosedLoop(points);
-        },
-        loading: () => [],
-        error: (_, __) => [],
-      );
-    },
-    loading: () => [],
-    error: (_, __) => [],
-  );
+  bool isInPark(Tree tree) => areaOf.containsKey(tree.id);
+
+  List<Tree> inArea(int areaIndex) =>
+      all.where((t) => areaOf[t.id] == areaIndex).toList();
+
+  int get insideCount => areaOf.length;
+  int get outsideCount => all.length - areaOf.length;
+}
+
+/// Area of [park] that [tree] belongs to: where it lies, or for a cluster
+/// whose average position fell just outside, the area of its members.
+int? areaOfPoint(Park park, Tree tree) {
+  final area = park.areaIndexAt(tree.latitude, tree.longitude);
+  if (area != null) return area;
+  final stored = tree.areaIndex;
+  if (tree.parkId == park.id && stored != null && stored < park.areas.length) {
+    return stored;
+  }
+  return null;
+}
+
+ParkTrees buildParkTrees(Park? park, List<Tree> points) {
+  final areaOf = <String, int>{};
+  if (park != null) {
+    for (final tree in points) {
+      final area = areaOfPoint(park, tree);
+      if (area != null) areaOf[tree.id] = area;
+    }
+  }
+  return ParkTrees(park: park, all: points, areaOf: areaOf);
+}
+
+final parkTreesProvider = Provider.autoDispose<ParkTrees>((ref) {
+  final park = ref.watch(selectedParkProvider);
+  final points = ref.watch(visiblePointsProvider);
+  return buildParkTrees(park, points);
 });
 
+/// Number of visible points (the active run's points, or its clusters in
+/// cluster view) per park id. Shown in the park list.
+final visibleParkCountsProvider = Provider<Map<String, int>>((ref) {
+  final parks = ref.watch(parksProvider).valueOrNull?.parks ?? const <Park>[];
+  final points = ref.watch(visiblePointsProvider);
+  final counts = <String, int>{};
+  for (final t in points) {
+    final m = membershipOf(parks, t);
+    if (m != null) counts[m.park.id] = (counts[m.park.id] ?? 0) + 1;
+  }
+  return counts;
+});
+
+/// Park/area a point belongs to (by position, or a cluster's stored area).
+ParkMembership? membershipOf(List<Park> parks, Tree tree) {
+  final byPosition = findParkMembership(parks, tree.latitude, tree.longitude);
+  if (byPosition != null) return byPosition;
+  for (final park in parks) {
+    final area = areaOfPoint(park, tree);
+    if (area != null) return ParkMembership(park, area);
+  }
+  return null;
+}

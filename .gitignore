@@ -10,6 +10,13 @@
 .svn/
 migrate_working_dir/
 
+# Code dump used for sharing the project, not part of the app
+all_files.txt
+
+# Python virtual environment for tools/build_map.py
+.venv/
+__pycache__/
+
 # IntelliJ related
 *.iml
 *.ipr
@@ -19,7 +26,7 @@ migrate_working_dir/
 # The .vscode folder contains launch configuration and tasks you configure in
 # VS Code which you may wish to be included in version control, so this line
 # is commented out by default.
-.vscode/
+#.vscode/
 
 # Flutter/Dart/Pub related
 **/doc/api/

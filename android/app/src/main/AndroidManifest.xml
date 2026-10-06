@@ -2,7 +2,7 @@
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
     <application
-        android:label="user_companion_navigation"
+        android:label="User Navigation Companion"
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher">
         <activity
@@ -45,3 +45,5 @@
         </intent>
     </queries>
 </manifest>
+
+

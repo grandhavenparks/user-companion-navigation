@@ -1,0 +1,22 @@
+allprojects {
+    repositories {
+        google()
+        mavenCentral()
+    }
+}
+
+// Put Android build output under the Flutter project's build/ folder.
+def newBuildDir = rootProject.layout.buildDirectory.dir("../../build").get()
+rootProject.layout.buildDirectory.value(newBuildDir)
+
+subprojects {
+    def newSubprojectBuildDir = newBuildDir.dir(project.name)
+    project.layout.buildDirectory.value(newSubprojectBuildDir)
+}
+subprojects {
+    project.evaluationDependsOn(":app")
+}
+
+tasks.register("clean", Delete) {
+    delete rootProject.layout.buildDirectory
+}
