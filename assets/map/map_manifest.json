@@ -1,19 +1,19 @@
 {
   "format": "mbtiles",
   "file": "basemap.mbtiles",
-  "build_id": "e0dd09adca930649",
-  "created_utc": "2026-10-06T17:39:59+00:00",
-  "source": "https://build.protomaps.com/20261006.pmtiles",
+  "build_id": "deeff3403769b845",
+  "created_utc": "2026-10-07T11:10:58+00:00",
+  "source": "https://build.protomaps.com/20261007.pmtiles",
   "min_zoom": 0,
   "max_zoom": 15,
   "tile_compression": "gzip",
-  "tile_count": 100,
-  "size_bytes": 1785856,
+  "tile_count": 57,
+  "size_bytes": 1191936,
   "buffer_m": 500.0,
   "bounds": [
     -86.246309,
-    42.954365,
-    -85.761453,
+    43.047756,
+    -86.201026,
     43.076943
   ],
   "parks": [
@@ -92,32 +92,6 @@
           43.057946,
           -86.239182,
           43.060536
-        ]
-      ]
-    },
-    {
-      "file": "MI_1001_AppleRidge.geojson",
-      "name": "Apple Ridge",
-      "areas": 1,
-      "bboxes": [
-        [
-          -85.765177,
-          42.96495,
-          -85.761453,
-          42.972369
-        ]
-      ]
-    },
-    {
-      "file": "MI_1002_GVSU.geojson",
-      "name": "GVSU",
-      "areas": 1,
-      "bboxes": [
-        [
-          -85.894022,
-          42.954365,
-          -85.883506,
-          42.972061
         ]
       ]
     }
